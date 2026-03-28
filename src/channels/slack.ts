@@ -1,3 +1,5 @@
+import fs from 'fs';
+
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
@@ -94,8 +96,7 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -113,7 +114,10 @@ export class SlackChannel implements Channel {
       let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -142,10 +146,7 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
@@ -211,6 +212,45 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
+  async sendFile(
+    jid: string,
+    filePath: string,
+    options?: { filename?: string; comment?: string },
+  ): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!fs.existsSync(filePath)) {
+      logger.warn({ jid, filePath }, 'sendFile: file not found');
+      return;
+    }
+
+    const stat = fs.statSync(filePath);
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB Slack limit
+    if (stat.size > MAX_FILE_SIZE) {
+      logger.warn(
+        { jid, filePath, size: stat.size },
+        'sendFile: file exceeds 50MB Slack limit',
+      );
+      return;
+    }
+
+    try {
+      const fileContent = fs.readFileSync(filePath);
+      await this.app.client.files.uploadV2({
+        channel_id: channelId,
+        file: fileContent,
+        filename: options?.filename || filePath.split('/').pop() || 'file',
+        initial_comment: options?.comment,
+      });
+      logger.info(
+        { jid, filePath, size: stat.size },
+        'Slack file uploaded',
+      );
+    } catch (err) {
+      logger.warn({ jid, filePath, err }, 'Failed to upload file to Slack');
+    }
+  }
+
   /**
    * Sync channel metadata from Slack.
    * Fetches channels the bot is a member of and stores their names in the DB.
@@ -245,9 +285,7 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);

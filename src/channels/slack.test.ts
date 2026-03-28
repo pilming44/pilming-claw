@@ -26,6 +26,29 @@ vi.mock('../db.js', () => ({
   updateChatName: vi.fn(),
 }));
 
+// Mock fs for sendFile tests
+const mockFs = vi.hoisted(() => ({
+  existsSync: vi.fn(),
+  statSync: vi.fn(),
+  readFileSync: vi.fn(),
+}));
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      existsSync: mockFs.existsSync,
+      statSync: mockFs.statSync,
+      readFileSync: mockFs.readFileSync,
+    },
+    existsSync: mockFs.existsSync,
+    statSync: mockFs.statSync,
+    readFileSync: mockFs.readFileSync,
+  };
+});
+
 // --- @slack/bolt mock ---
 
 type Handler = (...args: any[]) => any;
@@ -44,6 +67,9 @@ vi.mock('@slack/bolt', () => ({
       },
       chat: {
         postMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      files: {
+        uploadV2: vi.fn().mockResolvedValue(undefined),
       },
       conversations: {
         list: vi.fn().mockResolvedValue({
@@ -132,7 +158,9 @@ function currentApp() {
   return appRef.current;
 }
 
-async function triggerMessageEvent(event: ReturnType<typeof createMessageEvent>) {
+async function triggerMessageEvent(
+  event: ReturnType<typeof createMessageEvent>,
+) {
   const handler = currentApp().eventHandlers.get('message');
   if (handler) await handler({ event });
 }
@@ -309,7 +337,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ user: 'U_BOT_123', text: 'Self message' });
+      const event = createMessageEvent({
+        user: 'U_BOT_123',
+        text: 'Self message',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -391,13 +422,17 @@ describe('SlackChannel', () => {
       await channel.connect();
 
       // First message — API call
-      await triggerMessageEvent(createMessageEvent({ user: 'U_USER_456', text: 'First' }));
+      await triggerMessageEvent(
+        createMessageEvent({ user: 'U_USER_456', text: 'First' }),
+      );
       // Second message — should use cache
-      await triggerMessageEvent(createMessageEvent({
-        user: 'U_USER_456',
-        text: 'Second',
-        ts: '1704067201.000000',
-      }));
+      await triggerMessageEvent(
+        createMessageEvent({
+          user: 'U_USER_456',
+          text: 'Second',
+          ts: '1704067201.000000',
+        }),
+      );
 
       expect(currentApp().client.users.info).toHaveBeenCalledTimes(1);
     });
@@ -407,7 +442,9 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      currentApp().client.users.info.mockRejectedValueOnce(new Error('API error'));
+      currentApp().client.users.info.mockRejectedValueOnce(
+        new Error('API error'),
+      );
 
       const event = createMessageEvent({ user: 'U_UNKNOWN', text: 'Hi' });
       await triggerMessageEvent(event);
@@ -812,17 +849,13 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
 
       // First page returns a cursor; second page returns no cursor
-      currentApp().client.conversations.list
-        .mockResolvedValueOnce({
-          channels: [
-            { id: 'C001', name: 'general', is_member: true },
-          ],
+      currentApp()
+        .client.conversations.list.mockResolvedValueOnce({
+          channels: [{ id: 'C001', name: 'general', is_member: true }],
           response_metadata: { next_cursor: 'cursor_page2' },
         })
         .mockResolvedValueOnce({
-          channels: [
-            { id: 'C002', name: 'random', is_member: true },
-          ],
+          channels: [{ id: 'C002', name: 'random', is_member: true }],
           response_metadata: {},
         });
 
@@ -830,13 +863,101 @@ describe('SlackChannel', () => {
 
       // Should have called conversations.list twice (once per page)
       expect(currentApp().client.conversations.list).toHaveBeenCalledTimes(2);
-      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(2,
+      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(
+        2,
         expect.objectContaining({ cursor: 'cursor_page2' }),
       );
 
       // Both channels from both pages stored
       expect(updateChatName).toHaveBeenCalledWith('slack:C001', 'general');
       expect(updateChatName).toHaveBeenCalledWith('slack:C002', 'random');
+    });
+  });
+
+  // --- sendFile ---
+
+  describe('sendFile', () => {
+    it('uploads file via files.uploadV2', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.statSync.mockReturnValue({ size: 1024 });
+      mockFs.readFileSync.mockReturnValue(Buffer.from('file-content'));
+
+      await channel.sendFile('slack:C0123456789', '/tmp/test.png', {
+        filename: 'screenshot.png',
+        comment: 'Here it is',
+      });
+
+      expect(currentApp().client.files.uploadV2).toHaveBeenCalledWith({
+        channel_id: 'C0123456789',
+        file: Buffer.from('file-content'),
+        filename: 'screenshot.png',
+        initial_comment: 'Here it is',
+      });
+    });
+
+    it('uses basename when filename option is not provided', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.statSync.mockReturnValue({ size: 512 });
+      mockFs.readFileSync.mockReturnValue(Buffer.from('data'));
+
+      await channel.sendFile('slack:C0123456789', '/tmp/report.csv');
+
+      expect(currentApp().client.files.uploadV2).toHaveBeenCalledWith({
+        channel_id: 'C0123456789',
+        file: Buffer.from('data'),
+        filename: 'report.csv',
+        initial_comment: undefined,
+      });
+    });
+
+    it('skips upload when file does not exist', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFs.existsSync.mockReturnValue(false);
+
+      await channel.sendFile('slack:C0123456789', '/tmp/missing.png');
+
+      expect(currentApp().client.files.uploadV2).not.toHaveBeenCalled();
+    });
+
+    it('skips upload when file exceeds 50MB', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.statSync.mockReturnValue({ size: 51 * 1024 * 1024 });
+
+      await channel.sendFile('slack:C0123456789', '/tmp/huge.zip');
+
+      expect(currentApp().client.files.uploadV2).not.toHaveBeenCalled();
+    });
+
+    it('does not throw on API error', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.statSync.mockReturnValue({ size: 100 });
+      mockFs.readFileSync.mockReturnValue(Buffer.from('data'));
+      currentApp().client.files.uploadV2.mockRejectedValueOnce(
+        new Error('API error'),
+      );
+
+      await expect(
+        channel.sendFile('slack:C0123456789', '/tmp/test.png'),
+      ).resolves.toBeUndefined();
     });
   });
 

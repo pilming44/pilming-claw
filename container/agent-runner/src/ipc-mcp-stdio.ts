@@ -63,6 +63,50 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  'Upload a file to the user or group. The file must be under /workspace/group/ or /workspace/ipc/. Use this after creating screenshots, generating reports, or any file the user should receive.',
+  {
+    file_path: z.string().describe('Absolute path to the file inside the container (must start with /workspace/group/ or /workspace/ipc/)'),
+    filename: z.string().optional().describe('Display filename (defaults to the basename of file_path)'),
+    comment: z.string().optional().describe('Optional message to accompany the file'),
+  },
+  async (args) => {
+    // Validate path prefix
+    if (
+      !args.file_path.startsWith('/workspace/group/') &&
+      !args.file_path.startsWith('/workspace/ipc/')
+    ) {
+      return {
+        content: [{ type: 'text' as const, text: 'File path must be under /workspace/group/ or /workspace/ipc/.' }],
+        isError: true,
+      };
+    }
+
+    // Check file exists
+    if (!fs.existsSync(args.file_path)) {
+      return {
+        content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'send_file',
+      chatJid,
+      containerPath: args.file_path,
+      filename: args.filename || path.basename(args.file_path),
+      comment: args.comment,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `File queued for upload: ${args.filename || path.basename(args.file_path)}` }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
