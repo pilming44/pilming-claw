@@ -49,30 +49,50 @@ describe('stopContainer', () => {
 // --- ensureContainerRuntimeRunning ---
 
 describe('ensureContainerRuntimeRunning', () => {
-  it('does nothing when runtime is already running', () => {
+  it('does nothing when runtime is already running', async () => {
     mockExecSync.mockReturnValueOnce('');
 
-    ensureContainerRuntimeRunning();
+    await ensureContainerRuntimeRunning();
 
     expect(mockExecSync).toHaveBeenCalledTimes(1);
     expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
-      timeout: 10000,
+      timeout: 10_000,
     });
     expect(logger.debug).toHaveBeenCalledWith(
       'Container runtime already running',
     );
   });
 
-  it('throws when docker info fails', () => {
-    mockExecSync.mockImplementationOnce(() => {
-      throw new Error('Cannot connect to the Docker daemon');
-    });
+  it('throws when docker info fails after all retries', async () => {
+    vi.useFakeTimers();
+    const origError = console.error;
+    console.error = vi.fn();
+    try {
+      mockExecSync.mockImplementation(() => {
+        throw new Error('Cannot connect to the Docker daemon');
+      });
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow(
-      'Container runtime is required but failed to start',
-    );
-    expect(logger.error).toHaveBeenCalled();
+      // Capture rejection immediately to prevent unhandled rejection
+      let caught: Error | undefined;
+      const promise = ensureContainerRuntimeRunning().catch((e: Error) => {
+        caught = e;
+      });
+
+      // Fast-forward through all retry sleeps
+      for (let i = 0; i < 18; i++) {
+        await vi.advanceTimersByTimeAsync(5_000);
+      }
+
+      await promise;
+      expect(caught).toBeDefined();
+      expect(caught!.message).toMatch(
+        'Container runtime is required but not reachable',
+      );
+    } finally {
+      console.error = origError;
+      vi.useRealTimers();
+    }
   });
 });
 
