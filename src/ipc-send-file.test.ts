@@ -68,7 +68,9 @@ describe('IPC send_file path resolution', () => {
 
     expect(rel).toBe('screenshots/page.png');
     expect(rel.startsWith('..')).toBe(false);
-    expect(resolved).toBe('/data/groups/slack_test-channel/screenshots/page.png');
+    expect(resolved).toBe(
+      '/data/groups/slack_test-channel/screenshots/page.png',
+    );
   });
 
   it('resolves /workspace/ipc/ paths to host IPC folder', () => {

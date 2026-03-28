@@ -242,10 +242,7 @@ export class SlackChannel implements Channel {
         filename: options?.filename || filePath.split('/').pop() || 'file',
         initial_comment: options?.comment,
       });
-      logger.info(
-        { jid, filePath, size: stat.size },
-        'Slack file uploaded',
-      );
+      logger.info({ jid, filePath, size: stat.size }, 'Slack file uploaded');
     } catch (err) {
       logger.warn({ jid, filePath, err }, 'Failed to upload file to Slack');
     }
