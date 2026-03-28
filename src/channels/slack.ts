@@ -212,19 +212,35 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
-  async addReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async addReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
     try {
-      await this.app.client.reactions.add({ channel: channelId, name: emoji, timestamp: messageId });
+      await this.app.client.reactions.add({
+        channel: channelId,
+        name: emoji,
+        timestamp: messageId,
+      });
     } catch (err) {
       logger.debug({ jid, messageId, emoji, err }, 'Failed to add reaction');
     }
   }
 
-  async removeReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async removeReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
     try {
-      await this.app.client.reactions.remove({ channel: channelId, name: emoji, timestamp: messageId });
+      await this.app.client.reactions.remove({
+        channel: channelId,
+        name: emoji,
+        timestamp: messageId,
+      });
     } catch (err) {
       logger.debug({ jid, messageId, emoji, err }, 'Failed to remove reaction');
     }

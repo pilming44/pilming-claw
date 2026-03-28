@@ -506,14 +506,25 @@ async function startMessageLoop(): Promise<void> {
             const prevReactionMsgId = pendingReactions.get(chatJid);
             if (prevReactionMsgId) {
               channel
-                .removeReaction?.(chatJid, prevReactionMsgId, 'hourglass_flowing_sand')
+                .removeReaction?.(
+                  chatJid,
+                  prevReactionMsgId,
+                  'hourglass_flowing_sand',
+                )
                 ?.catch((err) =>
-                  logger.debug({ chatJid, err }, 'Failed to remove previous reaction'),
+                  logger.debug(
+                    { chatJid, err },
+                    'Failed to remove previous reaction',
+                  ),
                 );
             }
             pendingReactions.set(chatJid, pipedTriggerMsgId);
             channel
-              .addReaction?.(chatJid, pipedTriggerMsgId, 'hourglass_flowing_sand')
+              .addReaction?.(
+                chatJid,
+                pipedTriggerMsgId,
+                'hourglass_flowing_sand',
+              )
               ?.catch((err) =>
                 logger.debug({ chatJid, err }, 'Failed to add reaction'),
               );
