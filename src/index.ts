@@ -74,6 +74,10 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+// Tracks the trigger message ID awaiting reaction settlement per group.
+// Shared between processGroupMessages (callback settles) and startMessageLoop (piping sets).
+const pendingReactions = new Map<string, string>();
+
 const onecli = new OneCLI({ url: ONECLI_URL });
 
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
@@ -235,6 +239,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
 
+  // Trigger message ID for reaction indicators
+  const triggerMsgId = missedMessages[missedMessages.length - 1].id;
+
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
@@ -255,8 +262,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
+  pendingReactions.set(chatJid, triggerMsgId);
+  await channel.addReaction?.(chatJid, triggerMsgId, 'hourglass_flowing_sand');
   let hadError = false;
   let outputSentToUser = false;
+
+  const settleReaction = async (success: boolean) => {
+    const msgId = pendingReactions.get(chatJid);
+    if (!msgId) return;
+    pendingReactions.delete(chatJid);
+    await channel.removeReaction?.(chatJid, msgId, 'hourglass_flowing_sand');
+    if (success) {
+      await channel.addReaction?.(chatJid, msgId, 'white_check_mark');
+    }
+  };
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -277,15 +296,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     if (result.status === 'success') {
+      await settleReaction(true);
       queue.notifyIdle(chatJid);
     }
 
     if (result.status === 'error') {
       hadError = true;
+      await settleReaction(false);
     }
   });
 
   await channel.setTyping?.(chatJid, false);
+  // Ensure reaction is settled even if container exits without status callback
+  await settleReaction(!hadError && output !== 'error');
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -476,6 +499,25 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
+
+            // Reaction indicator for piped messages
+            const pipedTriggerMsgId =
+              groupMessages[groupMessages.length - 1].id;
+            const prevReactionMsgId = pendingReactions.get(chatJid);
+            if (prevReactionMsgId) {
+              channel
+                .removeReaction?.(chatJid, prevReactionMsgId, 'hourglass_flowing_sand')
+                ?.catch((err) =>
+                  logger.debug({ chatJid, err }, 'Failed to remove previous reaction'),
+                );
+            }
+            pendingReactions.set(chatJid, pipedTriggerMsgId);
+            channel
+              .addReaction?.(chatJid, pipedTriggerMsgId, 'hourglass_flowing_sand')
+              ?.catch((err) =>
+                logger.debug({ chatJid, err }, 'Failed to add reaction'),
+              );
+
             // Show typing indicator while the container processes the piped message
             channel
               .setTyping?.(chatJid, true)
