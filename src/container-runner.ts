@@ -26,6 +26,7 @@ import {
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
+import { readEnvFile } from './env.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
@@ -240,6 +241,15 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Naver CalDAV credentials (if configured).
+  // NO_PROXY bypasses the OneCLI gateway for CalDAV — it uses Basic Auth directly.
+  const naverCreds = readEnvFile(['NAVER_CALDAV_USER', 'NAVER_CALDAV_PASSWORD']);
+  if (naverCreds.NAVER_CALDAV_USER) {
+    args.push('-e', `NAVER_CALDAV_USER=${naverCreds.NAVER_CALDAV_USER}`);
+    args.push('-e', `NAVER_CALDAV_PASSWORD=${naverCreds.NAVER_CALDAV_PASSWORD || ''}`);
+    args.push('-e', 'NO_PROXY=caldav.calendar.naver.com');
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
