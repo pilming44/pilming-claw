@@ -4,6 +4,7 @@ import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
+import type { Vendor } from './types.js';
 
 interface QueuedTask {
   id: string;
@@ -24,6 +25,7 @@ interface GroupState {
   process: ChildProcess | null;
   containerName: string | null;
   groupFolder: string | null;
+  vendor: Vendor | null;
   retryCount: number;
 }
 
@@ -48,6 +50,7 @@ export class GroupQueue {
         process: null,
         containerName: null,
         groupFolder: null,
+        vendor: null,
         retryCount: 0,
       };
       this.groups.set(groupJid, state);
@@ -141,6 +144,14 @@ export class GroupQueue {
     if (groupFolder) state.groupFolder = groupFolder;
   }
 
+  setVendor(groupJid: string, vendor: Vendor): void {
+    this.getGroup(groupJid).vendor = vendor;
+  }
+
+  getVendor(groupJid: string): Vendor | null {
+    return this.getGroup(groupJid).vendor;
+  }
+
   /**
    * Mark the container as idle-waiting (finished work, waiting for IPC input).
    * If tasks are pending, preempt the idle container immediately.
@@ -157,7 +168,7 @@ export class GroupQueue {
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
    */
-  sendMessage(groupJid: string, text: string): boolean {
+  sendMessage(groupJid: string, text: string, requestId?: string): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;
@@ -169,7 +180,10 @@ export class GroupQueue {
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      fs.writeFileSync(
+        tempPath,
+        JSON.stringify({ type: 'message', text, requestId }),
+      );
       fs.renameSync(tempPath, filepath);
       return true;
     } catch {
@@ -226,6 +240,7 @@ export class GroupQueue {
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
+      state.vendor = null;
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -255,6 +270,7 @@ export class GroupQueue {
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
+      state.vendor = null;
       this.activeCount--;
       this.drainGroup(groupJid);
     }

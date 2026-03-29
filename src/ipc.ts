@@ -241,6 +241,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    vendor?: string;
     script?: string;
     groupFolder?: string;
     chatJid?: string;
@@ -335,6 +336,8 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const vendor =
+          data.vendor === 'openai' ? 'openai' : 'claude';
         createTask({
           id: taskId,
           group_folder: targetFolder,
@@ -344,6 +347,7 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          vendor,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),

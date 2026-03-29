@@ -3,6 +3,7 @@ import path from 'path';
 
 import { readEnvFile } from './env.js';
 import { isValidTimezone } from './timezone.js';
+import type { NewMessage, Vendor } from './types.js';
 
 // Read config values from .env (falls back to process.env).
 const envConfig = readEnvFile([
@@ -76,6 +77,22 @@ export function getTriggerPattern(trigger?: string): RegExp {
 }
 
 export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
+
+export function generateRequestId(): string {
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// --- Vendor detection (case-insensitive: @gpt, @GPT, @Gpt all work) ---
+
+export const GPT_TRIGGER_PATTERN = /^@gpt\b/i;
+
+export function isGptTrigger(content: string): boolean {
+  return GPT_TRIGGER_PATTERN.test(content.trim());
+}
+
+export function detectVendorFromMessages(messages: NewMessage[]): Vendor {
+  return messages.some((m) => isGptTrigger(m.content)) ? 'openai' : 'claude';
+}
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.

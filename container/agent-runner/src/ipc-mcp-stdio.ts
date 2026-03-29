@@ -136,6 +136,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
     script: z.string().optional().describe('Optional bash script to run before waking the agent. Script must output JSON on the last line of stdout: { "wakeAgent": boolean, "data"?: any }. If wakeAgent is false, the agent is not called. Test your script with bash -c "..." before scheduling.'),
+    vendor: z.enum(['claude', 'openai']).default('claude').describe('Which LLM vendor to use for this task. "claude" (default) uses Claude, "openai" uses OpenAI GPT.'),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -185,6 +186,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       schedule_type: args.schedule_type,
       schedule_value: args.schedule_value,
       context_mode: args.context_mode || 'group',
+      vendor: args.vendor || 'claude',
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),

@@ -6,9 +6,12 @@ import { OneCLI } from '@onecli-sh/sdk';
 import {
   ASSISTANT_NAME,
   DEFAULT_TRIGGER,
+  detectVendorFromMessages,
+  generateRequestId,
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  isGptTrigger,
   ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
@@ -59,7 +62,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, NewMessage, RegisteredGroup, Vendor } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -219,18 +222,33 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (missedMessages.length === 0) return true;
 
   // For non-main groups, check if trigger is required and present
+  // @gpt (case-insensitive) counts as a trigger and selects the OpenAI vendor
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
-        triggerPattern.test(m.content.trim()) &&
+        (triggerPattern.test(m.content.trim()) || isGptTrigger(m.content)) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
   }
 
+  const vendor = detectVendorFromMessages(missedMessages);
+  queue.setVendor(chatJid, vendor);
+  const requestId = generateRequestId();
   const prompt = formatMessages(missedMessages, TIMEZONE);
+
+  logger.info(
+    {
+      requestId,
+      group: group.name,
+      chatJid,
+      messageCount: missedMessages.length,
+      prompt: missedMessages.map((m) => m.content).join(' | ').slice(0, 200),
+    },
+    'Processing request',
+  );
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -277,7 +295,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   };
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, requestId, vendor, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -286,7 +304,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+      logger.info(
+        {
+          requestId: result.requestId,
+          group: group.name,
+          chatJid,
+          model: result.model || 'default(sonnet)',
+          inputTokens: result.usage?.input_tokens,
+          outputTokens: result.usage?.output_tokens,
+          costUSD: result.costUSD,
+          durationMs: result.durationMs,
+          numTurns: result.numTurns,
+          resultLength: text.length,
+        },
+        'Agent response',
+      );
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -338,6 +370,8 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  requestId: string,
+  vendor: Vendor = 'claude',
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -390,6 +424,8 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        requestId,
+        vendor,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -473,7 +509,8 @@ async function startMessageLoop(): Promise<void> {
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(
               (m) =>
-                triggerPattern.test(m.content.trim()) &&
+                (triggerPattern.test(m.content.trim()) ||
+                  isGptTrigger(m.content)) &&
                 (m.is_from_me ||
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
@@ -491,10 +528,34 @@ async function startMessageLoop(): Promise<void> {
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
-          if (queue.sendMessage(chatJid, formatted)) {
-            logger.debug(
-              { chatJid, count: messagesToSend.length },
-              'Piped messages to active container',
+          // If the incoming message targets a different vendor than the
+          // active container, close the current container and enqueue fresh.
+          const pipeVendor = detectVendorFromMessages(messagesToSend);
+          const currentVendor = queue.getVendor(chatJid);
+          if (currentVendor && pipeVendor !== currentVendor) {
+            logger.info(
+              { chatJid, from: currentVendor, to: pipeVendor },
+              'Vendor changed, closing active container',
+            );
+            queue.closeStdin(chatJid);
+            queue.enqueueMessageCheck(chatJid);
+            continue;
+          }
+
+          const pipedRequestId = generateRequestId();
+          if (queue.sendMessage(chatJid, formatted, pipedRequestId)) {
+            logger.info(
+              {
+                requestId: pipedRequestId,
+                group: group.name,
+                chatJid,
+                messageCount: messagesToSend.length,
+                prompt: messagesToSend
+                  .map((m) => m.content)
+                  .join(' | ')
+                  .slice(0, 200),
+              },
+              'Piped request to active container',
             );
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;

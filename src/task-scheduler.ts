@@ -2,7 +2,12 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import {
+  ASSISTANT_NAME,
+  generateRequestId,
+  SCHEDULER_POLL_INTERVAL,
+  TIMEZONE,
+} from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -169,6 +174,12 @@ async function runTask(
     }, TASK_CLOSE_DELAY_MS);
   };
 
+  const requestId = generateRequestId();
+  logger.info(
+    { requestId, taskId: task.id, group: group.name, prompt: task.prompt.slice(0, 200) },
+    'Running scheduled task',
+  );
+
   try {
     const output = await runContainerAgent(
       group,
@@ -181,12 +192,28 @@ async function runTask(
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,
+        requestId,
+        vendor: task.vendor || 'claude',
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
+          logger.info(
+            {
+              requestId: streamedOutput.requestId,
+              taskId: task.id,
+              group: group.name,
+              model: streamedOutput.model || 'default(sonnet)',
+              inputTokens: streamedOutput.usage?.input_tokens,
+              outputTokens: streamedOutput.usage?.output_tokens,
+              costUSD: streamedOutput.costUSD,
+              durationMs: streamedOutput.durationMs,
+              numTurns: streamedOutput.numTurns,
+            },
+            'Task response',
+          );
           // Forward result to user (sendMessage handles formatting)
           await deps.sendMessage(task.chat_jid, streamedOutput.result);
           scheduleClose();

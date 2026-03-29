@@ -1,3 +1,5 @@
+export type Vendor = 'claude' | 'openai';
+
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}
@@ -62,6 +64,7 @@ export interface ScheduledTask {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  vendor?: Vendor;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;

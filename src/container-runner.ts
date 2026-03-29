@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -27,7 +28,7 @@ import {
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
 import { readEnvFile } from './env.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, Vendor } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
@@ -44,6 +45,8 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  requestId?: string;
+  vendor?: Vendor;
 }
 
 export interface ContainerOutput {
@@ -51,6 +54,12 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  requestId?: string;
+  model?: string;
+  usage?: { input_tokens: number; output_tokens: number };
+  costUSD?: number;
+  durationMs?: number;
+  numTurns?: number;
 }
 
 interface VolumeMount {
@@ -219,6 +228,23 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // OpenAI OAuth token file (for ChatGPT subscription auth)
+  const HOME_DIR = process.env.HOME || os.homedir();
+  const oauthFile = path.join(
+    HOME_DIR,
+    '.config',
+    'nanoclaw',
+    'openai-oauth.json',
+  );
+  if (fs.existsSync(oauthFile)) {
+    // Ensure the container target directory exists as a file mount
+    mounts.push({
+      hostPath: oauthFile,
+      containerPath: '/workspace/auth/openai-oauth.json',
+      readonly: false, // Container needs write access for token refresh
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -236,6 +262,7 @@ async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   agentIdentifier?: string,
+  vendor?: Vendor,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -244,10 +271,16 @@ async function buildContainerArgs(
 
   // Naver CalDAV credentials (if configured).
   // NO_PROXY bypasses the OneCLI gateway for CalDAV — it uses Basic Auth directly.
-  const naverCreds = readEnvFile(['NAVER_CALDAV_USER', 'NAVER_CALDAV_PASSWORD']);
+  const naverCreds = readEnvFile([
+    'NAVER_CALDAV_USER',
+    'NAVER_CALDAV_PASSWORD',
+  ]);
   if (naverCreds.NAVER_CALDAV_USER) {
     args.push('-e', `NAVER_CALDAV_USER=${naverCreds.NAVER_CALDAV_USER}`);
-    args.push('-e', `NAVER_CALDAV_PASSWORD=${naverCreds.NAVER_CALDAV_PASSWORD || ''}`);
+    args.push(
+      '-e',
+      `NAVER_CALDAV_PASSWORD=${naverCreds.NAVER_CALDAV_PASSWORD || ''}`,
+    );
     args.push('-e', 'NO_PROXY=caldav.calendar.naver.com');
   }
 
@@ -263,6 +296,30 @@ async function buildContainerArgs(
     logger.warn(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
+    );
+
+    // Fallback for non-OneCLI setups: inject OpenAI credentials from .env
+    if (vendor === 'openai') {
+      const openaiCreds = readEnvFile(['OPENAI_API_KEY']);
+      if (openaiCreds.OPENAI_API_KEY) {
+        args.push('-e', `OPENAI_API_KEY=${openaiCreds.OPENAI_API_KEY}`);
+      }
+    }
+  }
+
+  // Pass OpenAI configuration when vendor is openai
+  if (vendor === 'openai') {
+    const openaiModel = process.env.OPENAI_MODEL || 'gpt-5.4';
+    args.push('-e', `OPENAI_MODEL=${openaiModel}`);
+
+    // Determine auth mode: subscription (OAuth) if token file exists, otherwise apikey
+    const homeDir = process.env.HOME || os.homedir();
+    const oauthExists = fs.existsSync(
+      path.join(homeDir, '.config', 'nanoclaw', 'openai-oauth.json'),
+    );
+    args.push(
+      '-e',
+      `OPENAI_AUTH_MODE=${oauthExists ? 'subscription' : 'apikey'}`,
     );
   }
 
@@ -314,6 +371,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     agentIdentifier,
+    input.vendor,
   );
 
   logger.debug(
