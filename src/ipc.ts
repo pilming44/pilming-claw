@@ -336,8 +336,7 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
-        const vendor =
-          data.vendor === 'openai' ? 'openai' : 'claude';
+        const vendor = data.vendor === 'openai' ? 'openai' : 'claude';
         createTask({
           id: taskId,
           group_folder: targetFolder,

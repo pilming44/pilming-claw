@@ -245,7 +245,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       group: group.name,
       chatJid,
       messageCount: missedMessages.length,
-      prompt: missedMessages.map((m) => m.content).join(' | ').slice(0, 200),
+      prompt: missedMessages
+        .map((m) => m.content)
+        .join(' | ')
+        .slice(0, 200),
     },
     'Processing request',
   );
@@ -295,48 +298,56 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   };
 
-  const output = await runAgent(group, prompt, chatJid, requestId, vendor, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info(
-        {
-          requestId: result.requestId,
-          group: group.name,
-          chatJid,
-          model: result.model || 'default(sonnet)',
-          inputTokens: result.usage?.input_tokens,
-          outputTokens: result.usage?.output_tokens,
-          costUSD: result.costUSD,
-          durationMs: result.durationMs,
-          numTurns: result.numTurns,
-          resultLength: text.length,
-        },
-        'Agent response',
-      );
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    requestId,
+    vendor,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info(
+          {
+            requestId: result.requestId,
+            group: group.name,
+            chatJid,
+            model: result.model || 'default(sonnet)',
+            inputTokens: result.usage?.input_tokens,
+            outputTokens: result.usage?.output_tokens,
+            costUSD: result.costUSD,
+            durationMs: result.durationMs,
+            numTurns: result.numTurns,
+            resultLength: text.length,
+          },
+          'Agent response',
+        );
+        if (text) {
+          const modelTag = result.model ? `(${result.model}) ` : '';
+          await channel.sendMessage(chatJid, `${modelTag}${text}`);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      await settleReaction(true);
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        await settleReaction(true);
+        queue.notifyIdle(chatJid);
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-      await settleReaction(false);
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+        await settleReaction(false);
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   // Ensure reaction is settled even if container exits without status callback

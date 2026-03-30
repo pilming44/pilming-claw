@@ -208,8 +208,9 @@ interface ResponsesToolCall {
 
 interface ResponsesOutputItem {
   type: string;
-  // For text output
+  // For text output (flat or nested)
   text?: string;
+  content?: Array<{ type: string; text: string }>;
   // For function calls
   id?: string;
   name?: string;
@@ -226,6 +227,18 @@ interface ResponsesAPIResponse {
     output_tokens: number;
     total_tokens: number;
   };
+}
+
+/** Extract text from a ResponsesOutputItem (handles both flat and nested content) */
+function extractText(item: ResponsesOutputItem): string | undefined {
+  if (item.text) return item.text;
+  if (item.content) {
+    return item.content
+      .filter((c) => c.type === 'output_text' && c.text)
+      .map((c) => c.text)
+      .join('');
+  }
+  return undefined;
 }
 
 const WHAM_BASE_URL = 'https://chatgpt.com/backend-api/wham';
@@ -286,8 +299,7 @@ async function callResponsesAPI(
   }
 
   log(`[openai:wham] Seen event types: ${seenTypes.join(', ')}`);
-  log(`[openai:wham] Full SSE text (first 2000 chars): ${text.slice(0, 2000)}`);
-  throw new Error('No response.done event received from WHAM streaming API');
+  throw new Error('No response.completed event received from WHAM streaming API');
 }
 
 /**
@@ -298,10 +310,11 @@ function outputToInput(output: ResponsesOutputItem[]): ResponsesInputItem[] {
   const items: ResponsesInputItem[] = [];
 
   for (const item of output) {
-    if (item.type === 'message' && item.text) {
+    const text = extractText(item);
+    if (item.type === 'message' && text) {
       items.push({
         role: 'assistant',
-        content: [{ type: 'output_text', text: item.text }],
+        content: [{ type: 'output_text', text }],
       });
     }
   }
@@ -349,12 +362,12 @@ async function runResponsesLoop(
       (o) => o.type === 'function_call',
     );
     const textOutputs = response.output.filter(
-      (o) => o.type === 'message' && o.text,
+      (o) => o.type === 'message' && extractText(o),
     );
 
     // If no function calls, we're done
     if (functionCalls.length === 0) {
-      const resultText = textOutputs.map((o) => o.text).join('\n');
+      const resultText = textOutputs.map((o) => extractText(o)).join('\n');
       return {
         result: resultText || null,
         totalInputTokens,
@@ -382,10 +395,10 @@ async function runResponsesLoop(
             },
           ],
         });
-      } else if (item.type === 'message' && item.text) {
+      } else if (item.type === 'message' && extractText(item)) {
         conversationInput.push({
           role: 'assistant',
-          content: [{ type: 'output_text', text: item.text }],
+          content: [{ type: 'output_text', text: extractText(item)! }],
         });
       }
     }

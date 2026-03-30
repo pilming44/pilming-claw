@@ -176,7 +176,12 @@ async function runTask(
 
   const requestId = generateRequestId();
   logger.info(
-    { requestId, taskId: task.id, group: group.name, prompt: task.prompt.slice(0, 200) },
+    {
+      requestId,
+      taskId: task.id,
+      group: group.name,
+      prompt: task.prompt.slice(0, 200),
+    },
     'Running scheduled task',
   );
 
@@ -215,7 +220,8 @@ async function runTask(
             'Task response',
           );
           // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          const modelTag = streamedOutput.model ? `(${streamedOutput.model}) ` : '';
+          await deps.sendMessage(task.chat_jid, `${modelTag}${streamedOutput.result}`);
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
