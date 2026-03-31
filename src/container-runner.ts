@@ -269,11 +269,15 @@ async function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // NO_PROXY domains — collected here, pushed once before OneCLI block.
+  // Services that use their own auth (not OneCLI gateway) must bypass the proxy.
+  const noProxyDomains: string[] = [];
+
   // Naver CalDAV credentials (if configured).
-  // NO_PROXY bypasses the OneCLI gateway for CalDAV — it uses Basic Auth directly.
   const naverCreds = readEnvFile([
     'NAVER_CALDAV_USER',
     'NAVER_CALDAV_PASSWORD',
+    'NAVER_CALDAV_URL',
   ]);
   if (naverCreds.NAVER_CALDAV_USER) {
     args.push('-e', `NAVER_CALDAV_USER=${naverCreds.NAVER_CALDAV_USER}`);
@@ -281,7 +285,21 @@ async function buildContainerArgs(
       '-e',
       `NAVER_CALDAV_PASSWORD=${naverCreds.NAVER_CALDAV_PASSWORD || ''}`,
     );
-    args.push('-e', 'NO_PROXY=caldav.calendar.naver.com');
+    if (naverCreds.NAVER_CALDAV_URL) {
+      args.push('-e', `NAVER_CALDAV_URL=${naverCreds.NAVER_CALDAV_URL}`);
+    }
+    noProxyDomains.push('caldav.calendar.naver.com');
+  }
+
+  // Kakao Map / Directions API key (if configured).
+  const kakaoCreds = readEnvFile(['KAKAO_REST_API_KEY']);
+  if (kakaoCreds.KAKAO_REST_API_KEY) {
+    args.push('-e', `KAKAO_REST_API_KEY=${kakaoCreds.KAKAO_REST_API_KEY}`);
+    noProxyDomains.push('apis-navi.kakaomobility.com', 'dapi.kakao.com');
+  }
+
+  if (noProxyDomains.length) {
+    args.push('-e', `NO_PROXY=${noProxyDomains.join(',')}`);
   }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.

@@ -70,6 +70,11 @@ async function caldavRequest(method, url, body, extraHeaders = {}) {
 // ─── Calendar discovery ──────────────────────────────────────────────────────
 
 async function discoverCalendarUrl() {
+  // Direct URL override — skips discovery entirely when set.
+  if (process.env.NAVER_CALDAV_URL) {
+    return process.env.NAVER_CALDAV_URL;
+  }
+
   // Check cache
   if (existsSync(CONFIG_PATH)) {
     try {

@@ -220,8 +220,13 @@ async function runTask(
             'Task response',
           );
           // Forward result to user (sendMessage handles formatting)
-          const modelTag = streamedOutput.model ? `(${streamedOutput.model}) ` : '';
-          await deps.sendMessage(task.chat_jid, `${modelTag}${streamedOutput.result}`);
+          const modelTag = streamedOutput.model
+            ? `(${streamedOutput.model}) `
+            : '';
+          await deps.sendMessage(
+            task.chat_jid,
+            `${modelTag}${streamedOutput.result}`,
+          );
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
