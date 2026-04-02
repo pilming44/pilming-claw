@@ -343,10 +343,22 @@ async function buildContainerArgs(
 
   // Discuss mode: dual-model debate (Claude Opus + GPT via Codex app-server)
   if (vendor === 'discuss') {
-    args.push('-e', `DISCUSS_CLAUDE_MODEL=${process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-6'}`);
-    args.push('-e', `DISCUSS_OPENAI_MODEL=${process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4'}`);
-    args.push('-e', `DISCUSS_OPENAI_REASONING=${process.env.DISCUSS_OPENAI_REASONING || 'xhigh'}`);
-    args.push('-e', `DISCUSS_MAX_ROUNDS=${process.env.DISCUSS_MAX_ROUNDS || '10'}`);
+    args.push(
+      '-e',
+      `DISCUSS_CLAUDE_MODEL=${process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-6'}`,
+    );
+    args.push(
+      '-e',
+      `DISCUSS_OPENAI_MODEL=${process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4'}`,
+    );
+    args.push(
+      '-e',
+      `DISCUSS_OPENAI_REASONING=${process.env.DISCUSS_OPENAI_REASONING || 'xhigh'}`,
+    );
+    args.push(
+      '-e',
+      `DISCUSS_MAX_ROUNDS=${process.env.DISCUSS_MAX_ROUNDS || '10'}`,
+    );
   }
 
   // Runtime-specific args for host gateway resolution
