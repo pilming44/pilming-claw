@@ -1,4 +1,4 @@
-export type Vendor = 'claude' | 'openai';
+export type Vendor = 'claude' | 'openai' | 'discuss';
 
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)

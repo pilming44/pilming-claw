@@ -330,8 +330,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Vendor dispatch: route to OpenAI runner if vendor is 'openai'
+  // Vendor dispatch: route to specialized runners
   const vendor = containerInput.vendor || 'claude';
+  if (vendor === 'discuss') {
+    log('Dispatching to discuss runner');
+    const { runDiscuss } = await import('./discuss-runner.js');
+    await runDiscuss(containerInput);
+    return;
+  }
   if (vendor === 'openai') {
     log('Dispatching to OpenAI runner');
     const { runOpenAI } = await import('./openai-runner.js');

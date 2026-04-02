@@ -90,7 +90,16 @@ export function isGptTrigger(content: string): boolean {
   return GPT_TRIGGER_PATTERN.test(content.trim());
 }
 
+// --- Discuss trigger (@discuss) — Claude Opus + GPT 5.4 debate ---
+
+export const DISCUSS_TRIGGER_PATTERN = /^@discuss\b/i;
+
+export function isDiscussTrigger(content: string): boolean {
+  return DISCUSS_TRIGGER_PATTERN.test(content.trim());
+}
+
 export function detectVendorFromMessages(messages: NewMessage[]): Vendor {
+  if (messages.some((m) => isDiscussTrigger(m.content))) return 'discuss';
   return messages.some((m) => isGptTrigger(m.content)) ? 'openai' : 'claude';
 }
 

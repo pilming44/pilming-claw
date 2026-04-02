@@ -317,7 +317,7 @@ async function buildContainerArgs(
     );
 
     // Fallback for non-OneCLI setups: inject OpenAI credentials from .env
-    if (vendor === 'openai') {
+    if (vendor === 'openai' || vendor === 'discuss') {
       const openaiCreds = readEnvFile(['OPENAI_API_KEY']);
       if (openaiCreds.OPENAI_API_KEY) {
         args.push('-e', `OPENAI_API_KEY=${openaiCreds.OPENAI_API_KEY}`);
@@ -325,8 +325,8 @@ async function buildContainerArgs(
     }
   }
 
-  // Pass OpenAI configuration when vendor is openai
-  if (vendor === 'openai') {
+  // Pass OpenAI configuration when vendor is openai or discuss
+  if (vendor === 'openai' || vendor === 'discuss') {
     const openaiModel = process.env.OPENAI_MODEL || 'gpt-5.4';
     args.push('-e', `OPENAI_MODEL=${openaiModel}`);
 
@@ -339,6 +339,14 @@ async function buildContainerArgs(
       '-e',
       `OPENAI_AUTH_MODE=${oauthExists ? 'subscription' : 'apikey'}`,
     );
+  }
+
+  // Discuss mode: dual-model debate (Claude Opus + GPT via Codex app-server)
+  if (vendor === 'discuss') {
+    args.push('-e', `DISCUSS_CLAUDE_MODEL=${process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-6'}`);
+    args.push('-e', `DISCUSS_OPENAI_MODEL=${process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4'}`);
+    args.push('-e', `DISCUSS_OPENAI_REASONING=${process.env.DISCUSS_OPENAI_REASONING || 'xhigh'}`);
+    args.push('-e', `DISCUSS_MAX_ROUNDS=${process.env.DISCUSS_MAX_ROUNDS || '10'}`);
   }
 
   // Runtime-specific args for host gateway resolution

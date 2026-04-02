@@ -11,6 +11,7 @@ import {
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  isDiscussTrigger,
   isGptTrigger,
   ONECLI_URL,
   POLL_INTERVAL,
@@ -228,7 +229,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
-        (triggerPattern.test(m.content.trim()) || isGptTrigger(m.content)) &&
+        (triggerPattern.test(m.content.trim()) ||
+          isGptTrigger(m.content) ||
+          isDiscussTrigger(m.content)) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
@@ -521,7 +524,8 @@ async function startMessageLoop(): Promise<void> {
             const hasTrigger = groupMessages.some(
               (m) =>
                 (triggerPattern.test(m.content.trim()) ||
-                  isGptTrigger(m.content)) &&
+                  isGptTrigger(m.content) ||
+                  isDiscussTrigger(m.content)) &&
                 (m.is_from_me ||
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );

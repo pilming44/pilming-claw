@@ -243,27 +243,71 @@ function extractText(item: ResponsesOutputItem): string | undefined {
 
 const WHAM_BASE_URL = 'https://chatgpt.com/backend-api/wham';
 
+/**
+ * Parse SSE stream into events. Handles multi-line data fields and
+ * event/data pairs per the SSE specification (https://html.spec.whatwg.org/multipage/server-sent-events.html).
+ */
+function parseSSEEvents(
+  raw: string,
+): Array<{ event: string | null; data: string }> {
+  const events: Array<{ event: string | null; data: string }> = [];
+  let currentEvent: string | null = null;
+  const dataLines: string[] = [];
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.replace(/\r$/, '');
+
+    if (trimmed === '') {
+      // Empty line = event boundary
+      if (dataLines.length > 0) {
+        events.push({ event: currentEvent, data: dataLines.join('\n') });
+        dataLines.length = 0;
+        currentEvent = null;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith('event:')) {
+      currentEvent = trimmed.slice(6).trim();
+    } else if (trimmed.startsWith('data:')) {
+      dataLines.push(trimmed.slice(5).trimStart());
+    }
+    // Ignore other fields (id:, retry:, comments)
+  }
+
+  // Flush remaining
+  if (dataLines.length > 0) {
+    events.push({ event: currentEvent, data: dataLines.join('\n') });
+  }
+
+  return events;
+}
+
 async function callResponsesAPI(
   instructions: string,
   input: ResponsesInputItem[],
   model: string,
   authHeaders: Record<string, string>,
+  options?: { tools?: boolean },
 ): Promise<ResponsesAPIResponse> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...authHeaders,
   };
 
-  const body = {
+  const includeTools = options?.tools !== false;
+  const body: Record<string, unknown> = {
     model,
     instructions,
     input,
     store: false,
     stream: true,
-    tools: responsesToolDefinitions(),
-    tool_choice: 'auto',
-    parallel_tool_calls: true,
   };
+  if (includeTools) {
+    body.tools = responsesToolDefinitions();
+    body.tool_choice = 'auto';
+    body.parallel_tool_calls = true;
+  }
 
   const response = await fetch(`${WHAM_BASE_URL}/responses`, {
     method: 'POST',
@@ -279,27 +323,88 @@ async function callResponsesAPI(
     );
   }
 
-  // Parse SSE stream — WHAM requires stream:true, so we read the response.done event
-  const text = await response.text();
+  const rawText = await response.text();
+  const sseEvents = parseSSEEvents(rawText);
 
   const seenTypes: string[] = [];
-  for (const line of text.split('\n')) {
-    if (!line.startsWith('data: ')) continue;
-    const data = line.slice(6).trim();
-    if (data === '[DONE]') { seenTypes.push('[DONE]'); continue; }
+  let lastResponse: ResponsesAPIResponse | null = null;
+
+  for (const evt of sseEvents) {
+    if (evt.data === '[DONE]') {
+      seenTypes.push('[DONE]');
+      continue;
+    }
+
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(data);
-      seenTypes.push(parsed.type || 'unknown');
-      if (parsed.type === 'response.completed' || parsed.type === 'response.done') {
-        return parsed.response as ResponsesAPIResponse;
-      }
+      parsed = JSON.parse(evt.data);
     } catch {
-      // ignore malformed lines
+      continue;
+    }
+
+    const type = (parsed.type as string) || evt.event || 'unknown';
+    seenTypes.push(type);
+
+    // Primary: response.completed carries the full response
+    if (type === 'response.completed' || type === 'response.done') {
+      const resp = (parsed.response ?? parsed) as ResponsesAPIResponse;
+      if (resp?.output) return resp;
+      lastResponse = resp;
     }
   }
 
+  // Fallback: return last captured response
+  if (lastResponse) {
+    log(`[openai:wham] Using fallback response from last event`);
+    return lastResponse;
+  }
+
   log(`[openai:wham] Seen event types: ${seenTypes.join(', ')}`);
+  log(`[openai:wham] Raw SSE (last 1000 chars): ${rawText.slice(-1000)}`);
   throw new Error('No response.completed event received from WHAM streaming API');
+}
+
+/**
+ * Simple single-turn GPT call for non-agentic use (e.g., debate/discuss).
+ * No tool calling — just text in, text out.
+ * Uses subscription (WHAM) if available, falls back to API key (Chat Completions).
+ */
+export async function callGptSimple(
+  system: string,
+  userPrompt: string,
+  model: string,
+): Promise<{ text: string; model: string }> {
+  const authMode = detectAuthMode();
+
+  if (authMode === 'subscription') {
+    const input: ResponsesInputItem[] = [
+      { role: 'user', content: [{ type: 'input_text', text: userPrompt }] },
+    ];
+
+    const resp = await withAutoRefresh(async (headers) =>
+      callResponsesAPI(system, input, model, headers, { tools: false }),
+    );
+
+    const text =
+      resp.output
+        ?.map((item) => extractText(item))
+        .filter(Boolean)
+        .join('') || '';
+
+    return { text, model: resp.model || model };
+  }
+
+  // API key mode
+  const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+  const apiKey = process.env.OPENAI_API_KEY;
+  const messages: ChatMessage[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: userPrompt },
+  ];
+
+  const resp = await callChatCompletions(messages, model, baseUrl, apiKey);
+  const text = resp.choices[0]?.message?.content || '';
+  return { text, model: resp.model || model };
 }
 
 /**

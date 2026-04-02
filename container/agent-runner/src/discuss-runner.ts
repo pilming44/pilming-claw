@@ -1,0 +1,376 @@
+/**
+ * Discuss Runner — Claude Opus + GPT 5.4 Debate Orchestrator.
+ *
+ * Triggered by `@discuss <topic>`. Runs a multi-round debate between
+ * Claude Opus (via Claude Agent SDK) and GPT 5.4 (via WHAM Responses API).
+ * Each round is streamed to the user. Users can intervene mid-debate.
+ * The debate ends when both models signal [CONSENSUS] or MAX_ROUNDS is reached.
+ */
+
+import fs from 'fs';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+
+import {
+  ContainerInput,
+  IPC_INPUT_DIR,
+  writeOutput,
+  log,
+  drainIpcInput,
+  waitForIpcMessage,
+  shouldClose,
+} from './shared.js';
+import { callGptSimple } from './openai-runner.js';
+
+// --- Configuration ---
+
+const CLAUDE_MODEL = process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-6';
+const OPENAI_MODEL = process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4';
+const MAX_ROUNDS = parseInt(process.env.DISCUSS_MAX_ROUNDS || '7', 10);
+
+const CONSENSUS_TAG = '[CONSENSUS]';
+const DISCUSS_TRIGGER = /^@discuss\s*/i;
+
+// Extract the actual user message from the XML envelope produced by router.ts
+function extractTopicFromPrompt(prompt: string): string {
+  const msgMatches = [...prompt.matchAll(/<message[^>]*>([\s\S]*?)<\/message>/g)];
+  if (msgMatches.length > 0) {
+    const lastMsg = msgMatches[msgMatches.length - 1][1].trim();
+    return lastMsg.replace(DISCUSS_TRIGGER, '').trim();
+  }
+  const stripped = prompt.replace(/<[^>]+>/g, ' ').trim();
+  return stripped.replace(DISCUSS_TRIGGER, '').trim();
+}
+
+// --- Types ---
+
+interface DebateMessage {
+  role: 'claude' | 'gpt' | 'moderator';
+  content: string;
+}
+
+// --- System prompts ---
+
+function buildClaudeSystemPrompt(topic: string): string {
+  return `You are Claude Opus, participating in a structured intellectual debate with GPT 5.4 on the following topic:
+
+"${topic}"
+
+Rules:
+- Provide thoughtful, well-reasoned arguments from your perspective.
+- Engage genuinely with GPT's arguments. Do not strawman or dismiss.
+- When you find GPT's point compelling, acknowledge it explicitly.
+- If you believe a genuine consensus is emerging — where both sides have converged on a substantive agreement — start your response with "[CONSENSUS]" followed by the agreed-upon conclusion.
+- Do NOT signal consensus prematurely or merely to be agreeable. Only use [CONSENSUS] when you genuinely believe the core disagreements have been resolved.
+- Provide thorough, in-depth responses. Do not artificially shorten your arguments.
+- If a [Moderator] message appears, incorporate their direction into your next response.
+- Respond in the same language as the user's topic.
+- Use plain text only. No markdown syntax (no #, ##, **, [], tables, etc.).`;
+}
+
+function buildGptSystemPrompt(topic: string): string {
+  return `You are GPT 5.4, participating in a structured intellectual debate with Claude Opus on the following topic:
+
+"${topic}"
+
+Rules:
+- Provide thoughtful, well-reasoned arguments from your perspective.
+- Engage genuinely with Claude's arguments. Do not strawman or dismiss.
+- When you find Claude's point compelling, acknowledge it explicitly.
+- If you believe a genuine consensus is emerging — where both sides have converged on a substantive agreement — start your response with "[CONSENSUS]" followed by the agreed-upon conclusion.
+- Do NOT signal consensus prematurely or merely to be agreeable. Only use [CONSENSUS] when you genuinely believe the core disagreements have been resolved.
+- Provide thorough, in-depth responses. Do not artificially shorten your arguments.
+- If a [Moderator] message appears, incorporate their direction into your next response.
+- Respond in the same language as the user's topic.
+- Use plain text only. No markdown syntax (no #, ##, **, [], tables, etc.).`;
+}
+
+// --- Claude API (via Claude Agent SDK — uses subscription auth) ---
+
+async function callClaude(
+  system: string,
+  prompt: string,
+): Promise<string> {
+  log(`[discuss] Calling Claude (${CLAUDE_MODEL}) via Agent SDK...`);
+
+  let resultText = '';
+
+  for await (const message of query({
+    prompt,
+    options: {
+      model: CLAUDE_MODEL,
+      systemPrompt: system,
+      tools: [],
+      maxTurns: 1,
+      persistSession: false,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    },
+  })) {
+    if (message.type === 'result') {
+      const rm = message as Record<string, unknown>;
+      resultText = (rm.result as string) || '';
+    }
+  }
+
+  log(`[discuss] Claude responded (${resultText.length} chars)`);
+  return resultText;
+}
+
+// --- GPT API (via WHAM Responses API — uses ChatGPT subscription) ---
+
+async function callGpt(system: string, prompt: string): Promise<string> {
+  log(`[discuss] Calling GPT (${OPENAI_MODEL}) via WHAM API...`);
+
+  const result = await callGptSimple(system, prompt, OPENAI_MODEL);
+
+  log(`[discuss] GPT responded (${result.text.length} chars, model: ${result.model})`);
+  return result.text;
+}
+
+// --- Debate history → prompt builders ---
+
+function buildClaudePrompt(history: DebateMessage[], topic: string, round: number): string {
+  if (history.length === 0) {
+    return `The user's original request:\n"${topic}"\n\nPlease present your initial position on this topic.`;
+  }
+
+  const parts: string[] = [
+    `[User's original request]: "${topic}"`,
+    `[Current round]: ${round}`,
+    '',
+    '--- Debate history ---',
+  ];
+  for (const msg of history) {
+    if (msg.role === 'claude') {
+      parts.push(`[Your previous response]:\n${msg.content}`);
+    } else if (msg.role === 'gpt') {
+      parts.push(`[GPT 5.4's response]:\n${msg.content}`);
+    } else if (msg.role === 'moderator') {
+      parts.push(`[Moderator intervention]:\n${msg.content}`);
+    }
+  }
+
+  parts.push(
+    '\n--- Instructions ---',
+    'Provide your next response. Always keep the user\'s original request as your primary focus.',
+    'Engage with GPT\'s latest arguments, but ensure your response directly serves the user\'s original question.',
+    'Add new depth, examples, or perspectives — do not merely repeat previous points.',
+  );
+  return parts.join('\n\n');
+}
+
+function buildGptPrompt(topic: string, history: DebateMessage[], round: number): string {
+  const parts: string[] = [
+    `[User's original request]: "${topic}"`,
+    `[Current round]: ${round}`,
+    '',
+    '--- Debate history ---',
+  ];
+
+  for (const msg of history) {
+    if (msg.role === 'claude') {
+      parts.push(`[Claude Opus]:\n${msg.content}\n`);
+    } else if (msg.role === 'gpt') {
+      parts.push(`[GPT 5.4 (you)]:\n${msg.content}\n`);
+    } else if (msg.role === 'moderator') {
+      parts.push(`[Moderator]:\n${msg.content}\n`);
+    }
+  }
+
+  parts.push(
+    '--- Instructions ---',
+    'Provide your next response as GPT 5.4. Always keep the user\'s original request as your primary focus.',
+    'Engage with Claude\'s latest arguments, but ensure your response directly serves the user\'s original question.',
+    'Add new depth, examples, or perspectives — do not merely repeat previous points.',
+  );
+  return parts.join('\n');
+}
+
+// --- Consensus detection ---
+
+function hasConsensus(text: string): boolean {
+  return text.trimStart().startsWith(CONSENSUS_TAG);
+}
+
+// --- Check for user intervention via IPC ---
+
+function checkUserIntervention(history: DebateMessage[]): void {
+  const messages = drainIpcInput();
+  if (messages.length === 0) return;
+
+  const combined = messages.map((m) => m.text).join('\n');
+  history.push({ role: 'moderator', content: combined });
+  log(`[discuss] Moderator intervention: ${combined.slice(0, 200)}`);
+
+  writeOutput({
+    status: 'success',
+    result: `\n👤 Moderator:\n${combined}`,
+    model: 'discuss',
+  });
+}
+
+// --- Generate final conclusion ---
+
+async function generateConclusion(
+  topic: string,
+  history: DebateMessage[],
+): Promise<string> {
+  const debateSummary = history
+    .map((m) => {
+      const label =
+        m.role === 'claude' ? 'Claude Opus' : m.role === 'gpt' ? 'GPT 5.4' : 'Moderator';
+      return `[${label}]: ${m.content}`;
+    })
+    .join('\n\n');
+
+  const system = `You are a neutral synthesizer. Given a debate between Claude Opus and GPT 5.4, produce a clear, consolidated conclusion that:
+1. Identifies the key points of agreement
+2. Notes any remaining differences in perspective
+3. Provides an actionable, balanced conclusion
+Use plain text only. No markdown. Respond in the same language as the debate topic.`;
+
+  const prompt = `Topic: "${topic}"\n\nFull debate transcript:\n\n${debateSummary}\n\nPlease synthesize the final conclusion.`;
+
+  return callClaude(system, prompt);
+}
+
+// --- Main debate loop ---
+
+async function runDebate(topic: string): Promise<void> {
+  const history: DebateMessage[] = [];
+  const claudeSystem = buildClaudeSystemPrompt(topic);
+  const gptSystem = buildGptSystemPrompt(topic);
+
+  writeOutput({
+    status: 'success',
+    result: `━━━ Discuss: ${topic.slice(0, 100)} ━━━`,
+    model: 'discuss',
+  });
+
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    log(`[discuss] === Round ${round}/${MAX_ROUNDS} ===`);
+
+    if (shouldClose()) {
+      log('[discuss] Close sentinel detected');
+      break;
+    }
+
+    if (round > 1) checkUserIntervention(history);
+
+    // --- Claude's turn ---
+    let claudeResponse: string;
+    try {
+      claudeResponse = await callClaude(claudeSystem, buildClaudePrompt(history, topic, round));
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log(`[discuss] Claude error: ${errMsg}`);
+      writeOutput({ status: 'error', result: `Claude error in round ${round}: ${errMsg}`, model: 'discuss' });
+      break;
+    }
+
+    history.push({ role: 'claude', content: claudeResponse });
+    writeOutput({
+      status: 'success',
+      result: `[Round ${round}]\n\n🔵 Claude Opus:\n${claudeResponse}`,
+      model: CLAUDE_MODEL,
+    });
+
+    if (shouldClose()) break;
+    checkUserIntervention(history);
+
+    // --- GPT's turn ---
+    let gptResponse: string;
+    try {
+      gptResponse = await callGpt(gptSystem, buildGptPrompt(topic, history, round));
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log(`[discuss] GPT error: ${errMsg}`);
+      writeOutput({ status: 'error', result: `GPT error in round ${round}: ${errMsg}`, model: 'discuss' });
+      break;
+    }
+
+    if (!gptResponse.trim()) {
+      log('[discuss] GPT returned empty response');
+      writeOutput({
+        status: 'success',
+        result: `\n🟢 GPT 5.4: (empty response — retrying next round)`,
+        model: OPENAI_MODEL,
+      });
+      continue;
+    }
+
+    history.push({ role: 'gpt', content: gptResponse });
+    writeOutput({
+      status: 'success',
+      result: `\n🟢 GPT 5.4:\n${gptResponse}`,
+      model: OPENAI_MODEL,
+    });
+
+    // --- Consensus check ---
+    if (hasConsensus(claudeResponse) && hasConsensus(gptResponse)) {
+      log('[discuss] Both models signaled consensus!');
+      writeOutput({ status: 'success', result: '\n✅ Both models reached consensus.', model: 'discuss' });
+      break;
+    }
+  }
+
+  // --- Final conclusion ---
+  log('[discuss] Generating final conclusion...');
+  try {
+    const conclusion = await generateConclusion(topic, history);
+    writeOutput({ status: 'success', result: `\n━━━ Conclusion ━━━\n${conclusion}`, model: 'discuss' });
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    log(`[discuss] Conclusion error: ${errMsg}`);
+    writeOutput({ status: 'error', result: `Failed to generate conclusion: ${errMsg}`, model: 'discuss' });
+  }
+}
+
+// --- Entry point ---
+
+export async function runDiscuss(containerInput: ContainerInput): Promise<void> {
+  log('[discuss] Starting discuss runner');
+  fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
+
+  try { fs.unlinkSync(`${IPC_INPUT_DIR}/_close`); } catch { /* ignore */ }
+
+  try {
+    let topic = extractTopicFromPrompt(containerInput.prompt);
+    if (!topic) {
+      writeOutput({
+        status: 'error',
+        result: 'Please provide a topic after @discuss. Example: @discuss Should we use microservices or monolith?',
+      });
+      return;
+    }
+
+    const pending = drainIpcInput();
+    if (pending.length > 0) {
+      topic += '\n' + pending.map((m) => m.text).join('\n');
+    }
+
+    await runDebate(topic);
+    writeOutput({ status: 'success', result: null });
+
+    // Multi-turn: wait for new topics
+    log('[discuss] Debate complete, waiting for next topic...');
+    while (true) {
+      const nextMsg = await waitForIpcMessage();
+      if (nextMsg === null) {
+        log('[discuss] Close sentinel received, exiting');
+        break;
+      }
+
+      const newTopic = nextMsg.text.replace(DISCUSS_TRIGGER, '').trim();
+      if (newTopic) {
+        log(`[discuss] New topic: ${newTopic.slice(0, 100)}`);
+        await runDebate(newTopic);
+        writeOutput({ status: 'success', result: null });
+      }
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    log(`[discuss] Fatal error: ${errMsg}`);
+    writeOutput({ status: 'error', result: null, error: errMsg });
+  }
+}

@@ -19,7 +19,7 @@ export interface ContainerInput {
   assistantName?: string;
   script?: string;
   requestId?: string;
-  vendor?: 'claude' | 'openai';
+  vendor?: 'claude' | 'openai' | 'discuss';
 }
 
 export interface ContainerOutput {
