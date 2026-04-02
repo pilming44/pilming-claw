@@ -101,6 +101,7 @@ async function callClaude(
       systemPrompt: system,
       tools: [],
       maxTurns: 1,
+      effort: 'max',
       persistSession: false,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
