@@ -79,6 +79,21 @@ Standard Markdown works: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
 ---
 
+## File Delivery Rules
+
+When the user requests a screenshot, file, or any generated artifact:
+
+1. **Always save to `/workspace/group/`** — never `/tmp` or other paths. `send_file` rejects paths outside `/workspace/group/` and `/workspace/ipc/`.
+2. **Always send via `send_file` immediately after saving** — do not just Read the file and end your turn. The user cannot see files inside the container; they must be delivered through the channel.
+
+Example (screenshot):
+```bash
+agent-browser screenshot --output /workspace/group/screenshots/page.png
+```
+Then call `send_file` with `file_path: /workspace/group/screenshots/page.png`.
+
+---
+
 ## Task Scripts
 
 For any recurring task, use `schedule_task`. Frequent agent invocations — especially multiple times a day — consume API credits and can risk account restrictions. If a simple check can determine whether action is needed, add a `script` — it runs first, and the agent is only called when the check passes. This keeps invocations to a minimum.

@@ -75,11 +75,13 @@ agent-browser get count ".item"   # Count matching elements
 
 ### Screenshots & PDF
 
+**Important:** Always save screenshots to `/workspace/group/` so they can be sent via `send_file`. Paths like `/tmp` are rejected by `send_file`.
+
 ```bash
-agent-browser screenshot          # Save to temp directory
+agent-browser screenshot --output /workspace/group/screenshots/page.png  # Recommended
 agent-browser screenshot path.png # Save to specific path
-agent-browser screenshot --full   # Full page
-agent-browser pdf output.pdf      # Save as PDF
+agent-browser screenshot --full --output /workspace/group/screenshots/full.png
+agent-browser pdf /workspace/group/output.pdf      # Save as PDF
 ```
 
 ### Wait

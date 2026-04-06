@@ -564,21 +564,22 @@ async function executeWebFetch(
     });
 
     const contentType = response.headers.get('content-type') || '';
+    const isError = !response.ok;
     if (
       contentType.includes('text') ||
       contentType.includes('json') ||
       contentType.includes('xml')
     ) {
       const text = await response.text();
-      // Truncate large responses
       const maxLen = 50_000;
-      return {
-        output:
-          text.length > maxLen ? text.slice(0, maxLen) + '\n...(truncated)' : text,
-      };
+      const statusLine = `HTTP ${response.status} ${response.statusText}\n---\n`;
+      const body =
+        text.length > maxLen ? text.slice(0, maxLen) + '\n...(truncated)' : text;
+      return { output: statusLine + body, isError };
     } else {
       return {
         output: `Fetched ${url} (${response.status}). Content-Type: ${contentType}. Binary content not displayed.`,
+        isError,
       };
     }
   } catch (err) {
@@ -615,6 +616,13 @@ function executeSendFile(
   const filePath = args.file_path as string;
   const filename = args.filename as string | undefined;
   const comment = args.comment as string | undefined;
+
+  if (
+    !filePath.startsWith('/workspace/group/') &&
+    !filePath.startsWith('/workspace/ipc/')
+  ) {
+    return { output: 'File path must be under /workspace/group/ or /workspace/ipc/.', isError: true };
+  }
 
   if (!fs.existsSync(filePath)) {
     return { output: `File not found: ${filePath}`, isError: true };
