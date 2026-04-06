@@ -235,6 +235,123 @@ Use plain text only. No markdown. Respond in the same language as the debate top
   return callClaude(system, prompt);
 }
 
+// --- Archive debate to conversations/ for main agent access ---
+
+const DISCUSS_INDEX_MAX_ENTRIES = 10;
+const DISCUSS_EXPIRY_DAYS = 10;
+
+function archiveDebate(topic: string, history: DebateMessage[], conclusion?: string): string | undefined {
+  try {
+    const dir = '/workspace/group/conversations';
+    fs.mkdirSync(dir, { recursive: true });
+
+    const date = new Date().toISOString().split('T')[0];
+    const slug = topic.slice(0, 50).replace(/[^a-zA-Z0-9가-힣\s]/g, '').trim().replace(/\s+/g, '-');
+    const filename = `${date}-discuss-${slug}.md`;
+    const filePath = `${dir}/${filename}`;
+
+    const lines: string[] = [
+      `# Discuss: ${topic.slice(0, 100)}`,
+      `Date: ${new Date().toISOString()}`,
+      `Participants: Claude Opus, GPT 5.4`,
+      `Rounds: ${history.filter(m => m.role === 'claude').length}`,
+      '',
+      '## User Question',
+      '',
+      topic,
+      '',
+    ];
+
+    for (const msg of history) {
+      const label = msg.role === 'claude' ? 'Claude Opus' : msg.role === 'gpt' ? 'GPT 5.4' : 'Moderator';
+      lines.push(`## ${label}`, '', msg.content, '');
+    }
+
+    if (conclusion) {
+      lines.push('## Conclusion', '', conclusion, '');
+    }
+
+    fs.writeFileSync(filePath, lines.join('\n'));
+    log(`[discuss] Archived debate to ${filePath}`);
+    return filename;
+  } catch (err) {
+    log(`[discuss] Failed to archive: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
+
+function updateDiscussIndex(topic: string, history: DebateMessage[], conclusion?: string, archiveFilename?: string): void {
+  try {
+    if (history.length === 0) {
+      log('[discuss] Empty history, skipping index update');
+      return;
+    }
+
+    const indexPath = '/workspace/group/conversations/recent-discussions.md';
+    const date = new Date().toISOString().split('T')[0];
+    const rounds = history.filter(m => m.role === 'claude').length;
+    const truncatedConclusion = conclusion
+      ? conclusion.slice(0, 100) + (conclusion.length > 100 ? '...' : '')
+      : 'No conclusion';
+
+    const entry = [
+      `### ${date}: ${topic.slice(0, 100)}`,
+      `Rounds: ${rounds} | Conclusion: ${truncatedConclusion}`,
+      archiveFilename ? `Transcript: ${archiveFilename}` : '',
+    ].filter(Boolean).join('\n');
+
+    let existingEntries: string[] = [];
+    if (fs.existsSync(indexPath)) {
+      const content = fs.readFileSync(indexPath, 'utf-8');
+      existingEntries = content.split(/(?=^### )/m)
+        .filter(e => e.trim() && !e.startsWith('# Recent') && !e.startsWith('Use Read'));
+    }
+
+    existingEntries.unshift(entry);
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - DISCUSS_EXPIRY_DAYS);
+    const cutoffStr = cutoff.toISOString().split('T')[0];
+
+    existingEntries = existingEntries.filter(e => {
+      const dateMatch = e.match(/^### (\d{4}-\d{2}-\d{2})/);
+      return dateMatch ? dateMatch[1] >= cutoffStr : true;
+    });
+
+    if (existingEntries.length > DISCUSS_INDEX_MAX_ENTRIES) {
+      existingEntries = existingEntries.slice(0, DISCUSS_INDEX_MAX_ENTRIES);
+    }
+
+    const indexContent = '# Recent Discussions\n\nUse Read to open the transcript file for full debate details.\n\n' + existingEntries.join('\n---\n\n');
+    fs.writeFileSync(indexPath, indexContent);
+    log(`[discuss] Updated discussions index at ${indexPath}`);
+  } catch (err) {
+    log(`[discuss] Failed to update index: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function cleanupExpiredDebates(): void {
+  try {
+    const dir = '/workspace/group/conversations';
+    if (!fs.existsSync(dir)) return;
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - DISCUSS_EXPIRY_DAYS);
+    const cutoffStr = cutoff.toISOString().split('T')[0];
+
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.startsWith('20') || !file.includes('-discuss-')) continue;
+      const fileDate = file.slice(0, 10);
+      if (fileDate < cutoffStr) {
+        fs.unlinkSync(`${dir}/${file}`);
+        log(`[discuss] Removed expired debate: ${file}`);
+      }
+    }
+  } catch (err) {
+    log(`[discuss] Cleanup error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // --- Main debate loop ---
 
 async function runDebate(topic: string): Promise<void> {
@@ -247,6 +364,9 @@ async function runDebate(topic: string): Promise<void> {
     result: `━━━ Discuss: ${topic.slice(0, 100)} ━━━`,
     model: 'discuss',
   });
+
+  let claudeAgreed = false;
+  let gptAgreed = false;
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     log(`[discuss] === Round ${round}/${MAX_ROUNDS} ===`);
@@ -269,6 +389,12 @@ async function runDebate(topic: string): Promise<void> {
       break;
     }
 
+    if (!claudeResponse.trim()) {
+      log('[discuss] Claude returned empty response, aborting debate');
+      writeOutput({ status: 'error', result: `Claude returned empty response in round ${round}. Debate aborted.`, model: 'discuss' });
+      break;
+    }
+
     history.push({ role: 'claude', content: claudeResponse });
     writeOutput({
       status: 'success',
@@ -278,6 +404,14 @@ async function runDebate(topic: string): Promise<void> {
 
     if (shouldClose()) break;
     checkUserIntervention(history);
+
+    // --- Mid-round consensus check (Claude just spoke) ---
+    claudeAgreed = hasConsensus(claudeResponse);
+    if (claudeAgreed && gptAgreed) {
+      log('[discuss] Both models signaled consensus (after Claude turn)!');
+      writeOutput({ status: 'success', result: '\n✅ Both models reached consensus.', model: 'discuss' });
+      break;
+    }
 
     // --- GPT's turn ---
     let gptResponse: string;
@@ -291,13 +425,9 @@ async function runDebate(topic: string): Promise<void> {
     }
 
     if (!gptResponse.trim()) {
-      log('[discuss] GPT returned empty response');
-      writeOutput({
-        status: 'success',
-        result: `\n🟢 GPT 5.4: (empty response — retrying next round)`,
-        model: OPENAI_MODEL,
-      });
-      continue;
+      log('[discuss] GPT returned empty response, aborting debate');
+      writeOutput({ status: 'error', result: `GPT returned empty response in round ${round}. Debate aborted.`, model: 'discuss' });
+      break;
     }
 
     history.push({ role: 'gpt', content: gptResponse });
@@ -307,8 +437,9 @@ async function runDebate(topic: string): Promise<void> {
       model: OPENAI_MODEL,
     });
 
-    // --- Consensus check ---
-    if (hasConsensus(claudeResponse) && hasConsensus(gptResponse)) {
+    // --- End-of-round consensus check (GPT just spoke) ---
+    gptAgreed = hasConsensus(gptResponse);
+    if (claudeAgreed && gptAgreed) {
       log('[discuss] Both models signaled consensus!');
       writeOutput({ status: 'success', result: '\n✅ Both models reached consensus.', model: 'discuss' });
       break;
@@ -317,14 +448,20 @@ async function runDebate(topic: string): Promise<void> {
 
   // --- Final conclusion ---
   log('[discuss] Generating final conclusion...');
+  let conclusion: string | undefined;
   try {
-    const conclusion = await generateConclusion(topic, history);
+    conclusion = await generateConclusion(topic, history);
     writeOutput({ status: 'success', result: `\n━━━ Conclusion ━━━\n${conclusion}`, model: 'discuss' });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     log(`[discuss] Conclusion error: ${errMsg}`);
     writeOutput({ status: 'error', result: `Failed to generate conclusion: ${errMsg}`, model: 'discuss' });
   }
+
+  // --- Archive debate for main agent access ---
+  const archiveFile = archiveDebate(topic, history, conclusion);
+  updateDiscussIndex(topic, history, conclusion, archiveFile);
+  cleanupExpiredDebates();
 }
 
 // --- Entry point ---

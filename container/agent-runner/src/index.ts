@@ -39,7 +39,7 @@ import {
   generateFallbackName,
 } from './shared.js';
 
-import { getGlobalClaudeMd, getExtraDirectories } from './system-prompt.js';
+import { getGlobalClaudeMd, getExtraDirectories, getRecentDiscussions } from './system-prompt.js';
 
 interface SessionEntry {
   sessionId: string;
@@ -214,6 +214,12 @@ async function runQuery(
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMd = getGlobalClaudeMd(containerInput);
+  const recentDiscussions = getRecentDiscussions();
+
+  const appendParts: string[] = [];
+  if (globalClaudeMd) appendParts.push(globalClaudeMd);
+  if (recentDiscussions) appendParts.push(recentDiscussions);
+  const appendContent = appendParts.length > 0 ? appendParts.join('\n\n---\n\n') : undefined;
 
   // Discover additional directories mounted at /workspace/extra/*
   const extraDirs = getExtraDirectories();
@@ -225,8 +231,8 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+      systemPrompt: appendContent
+        ? { type: 'preset' as const, preset: 'claude_code' as const, append: appendContent }
         : undefined,
       allowedTools: [
         'Bash',

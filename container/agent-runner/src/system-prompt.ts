@@ -46,6 +46,11 @@ export function buildSystemPrompt(containerInput: ContainerInput): string {
     }
   }
 
+  const recentDiscussions = getRecentDiscussions();
+  if (recentDiscussions) {
+    parts.push(recentDiscussions);
+  }
+
   return parts.join('\n\n---\n\n');
 }
 
@@ -60,6 +65,26 @@ export function getGlobalClaudeMd(
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
   if (fs.existsSync(globalClaudeMdPath)) {
     return fs.readFileSync(globalClaudeMdPath, 'utf-8');
+  }
+  return undefined;
+}
+
+/**
+ * Get the recent discussions index content.
+ * Returns undefined if the index doesn't exist or is empty.
+ */
+export function getRecentDiscussions(): string | undefined {
+  try {
+    const indexPath = '/workspace/group/conversations/recent-discussions.md';
+    if (fs.existsSync(indexPath)) {
+      const content = fs.readFileSync(indexPath, 'utf-8').trim();
+      if (content) {
+        log('Loaded recent discussions index');
+        return content;
+      }
+    }
+  } catch (err) {
+    log(`Failed to load recent discussions: ${err instanceof Error ? err.message : String(err)}`);
   }
   return undefined;
 }
