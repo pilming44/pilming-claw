@@ -266,11 +266,9 @@ function buildVolumeMounts(
   // first so the bind mount has a host inode to attach to (Docker on macOS
   // can't bind-mount a non-existent path).
   if (fs.existsSync(dhlotteryCredsFile) && !fs.existsSync(dhlotteryAuthFile)) {
-    fs.writeFileSync(
-      dhlotteryAuthFile,
-      '{"cookies":[],"origins":[]}\n',
-      { mode: 0o600 },
-    );
+    fs.writeFileSync(dhlotteryAuthFile, '{"cookies":[],"origins":[]}\n', {
+      mode: 0o600,
+    });
   }
 
   if (fs.existsSync(dhlotteryAuthFile)) {
