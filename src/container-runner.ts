@@ -245,6 +245,21 @@ function buildVolumeMounts(
     });
   }
 
+  // 동행복권 saved session (agent-browser state file) for lotto-buy skill
+  const dhlotteryAuthFile = path.join(
+    HOME_DIR,
+    '.config',
+    'nanoclaw',
+    'dhlottery-auth.json',
+  );
+  if (fs.existsSync(dhlotteryAuthFile)) {
+    mounts.push({
+      hostPath: dhlotteryAuthFile,
+      containerPath: '/workspace/auth/dhlottery-auth.json',
+      readonly: false, // Skill may re-save refreshed cookies after purchase
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
