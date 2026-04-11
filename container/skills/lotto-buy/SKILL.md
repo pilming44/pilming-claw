@@ -24,11 +24,20 @@ node /home/node/.claude/skills/lotto-buy/lotto-buy.mjs [options]
 | `--mode <auto\|manual\|mixed>` | `auto` | 번호 선택 방식. 현재 `auto`만 구현 |
 | `--confirm` | false | 실제 결제 진행. 없으면 dry-run (장바구니 담고 결제 취소) |
 
+## 인증 파일
+
+| 파일 | 역할 | 사용자 관리? |
+|---|---|---|
+| `~/.config/nanoclaw/dhlottery-creds.json` | ID/PW (`{"userId":"...","password":"..."}`, chmod 600) | ⭕ 한 번 생성 |
+| `~/.config/nanoclaw/dhlottery-auth.json` | 로그인 cookie 캐시 | ❌ 스킬이 자동 관리 |
+
+creds 만 만들어두면 첫 호출 시 자동 로그인 → 캐시 생성 → 이후 ~2~3시간은 캐시 hit. 세션 만료되면 자동 재로그인.
+
 ## 동작 순서
 
-1. 세션 파일(`/workspace/auth/dhlottery-auth.json`) 존재 확인
-2. agent-browser state load → 구매 페이지 진입
-3. 세션 유효 체크 (`#payAmt` 엘리먼트 존재 여부)
+1. (있으면) `dhlottery-auth.json` 캐시 로드 → 구매 페이지 진입
+2. 세션 유효 체크 (`#payAmt` 엘리먼트 존재 여부)
+3. 무효면 `tryRelogin()`: main.do → /login → ID/PW 입력 → `#btnLogin` 클릭 → 성공 시 `state save` 로 캐시 갱신
 4. 자동선택 체크박스 켜기 (`#checkAutoSelect` 라벨 클릭)
 5. 적용수량 select(`#amoundApply`) 에 게임수 세팅 + change 이벤트
 6. 장바구니 확인 버튼(`#btnSelectNum`) 클릭 → A~{games}슬롯에 자동 번호 추가
@@ -76,18 +85,23 @@ node /home/node/.claude/skills/lotto-buy/lotto-buy.mjs [options]
 ```json
 {
   "status": "error",
-  "code": "SESSION_EXPIRED" | "AUTH_MISSING" | "PAY_MISMATCH" | "MODAL_NOT_FOUND" | "PURCHASE_REJECTED" | "UNEXPECTED",
+  "code": "SESSION_EXPIRED" | "NO_CREDS_FILE" | "CREDS_PARSE_ERROR" | "CREDS_READ_ERROR" | "CREDS_MISSING_KEYS" | "BAD_CREDENTIALS" | "SESSION_EXPIRED_CAPTCHA" | "RELOGIN_FAILED" | "PAY_MISMATCH" | "MODAL_NOT_FOUND" | "PURCHASE_REJECTED" | "UNEXPECTED",
   "message": "사람이 읽을 수 있는 설명"
 }
 ```
 
 ## 에러 처리
 
-- **AUTH_MISSING**: `/workspace/auth/dhlottery-auth.json` 없음. 호스트에서 재로그인 + state save 필요. 사용자에게 재로그인 안내.
-- **SESSION_EXPIRED**: 세션 쿠키가 서버에서 만료. 호스트에서 수동 재로그인 필요.
+- **NO_CREDS_FILE**: `~/.config/nanoclaw/dhlottery-creds.json` 없음. 자동 로그인 불가. 사용자에게 creds 파일 생성 안내.
+- **CREDS_PARSE_ERROR**: creds 파일 JSON 파싱 실패 (smart quote, trailing comma 등). 사용자에게 파일 점검 안내.
+- **CREDS_READ_ERROR**: creds 파일 read 실패 (macOS Docker single-file bind mount stale 가능). 컨테이너 재기동 안내.
+- **CREDS_MISSING_KEYS**: creds 파일에 `userId`/`password` 키 누락.
+- **BAD_CREDENTIALS**: ID/PW 가 동행복권 서버에서 거부됨. 자격증명 확인 안내.
+- **SESSION_EXPIRED_CAPTCHA**: 로그인 시 CAPTCHA 트립. 호스트에서 수동 로그인 + state save 필요.
+- **SESSION_EXPIRED**: 캐시 만료 + creds 도 없음 (위 NO_CREDS_FILE 경로로 흡수됨, 실질 발생 안 함).
 - **PAY_MISMATCH**: 자동 선택/확인 이후 `#payAmt`가 기대값과 다름. UI 상태 이상.
 - **MODAL_NOT_FOUND**: `#popupLayerConfirm` 또는 영수증(`#popReceipt`) 모달이 제때 뜨지 않음.
-- **PURCHASE_REJECTED**: execBuy.do가 "비정상적인 방법으로 접속" 알림 반환. Playwright 지문 탐지 실패 → 스킬 운영 불가, 설계 재검토.
+- **PURCHASE_REJECTED**: execBuy.do가 "비정상적인 방법으로 접속" 알림 반환. Playwright 봇 탐지 우회가 풀린 상태 — 설계 재검토.
 
 ## 사용 예시
 

@@ -245,18 +245,47 @@ function buildVolumeMounts(
     });
   }
 
-  // 동행복권 saved session (agent-browser state file) for lotto-buy skill
+  // 동행복권 lotto-buy skill state files.
+  // - dhlottery-auth.json: agent-browser storage state (cookie cache).
+  //   Auto-managed by the skill — created/refreshed on first successful login.
+  // - dhlottery-creds.json: ID/PW for auto-relogin (personal use, chmod 600).
   const dhlotteryAuthFile = path.join(
     HOME_DIR,
     '.config',
     'nanoclaw',
     'dhlottery-auth.json',
   );
+  const dhlotteryCredsFile = path.join(
+    HOME_DIR,
+    '.config',
+    'nanoclaw',
+    'dhlottery-creds.json',
+  );
+
+  // If creds exist, the skill can self-bootstrap. Ensure the cache file exists
+  // first so the bind mount has a host inode to attach to (Docker on macOS
+  // can't bind-mount a non-existent path).
+  if (fs.existsSync(dhlotteryCredsFile) && !fs.existsSync(dhlotteryAuthFile)) {
+    fs.writeFileSync(
+      dhlotteryAuthFile,
+      '{"cookies":[],"origins":[]}\n',
+      { mode: 0o600 },
+    );
+  }
+
   if (fs.existsSync(dhlotteryAuthFile)) {
     mounts.push({
       hostPath: dhlotteryAuthFile,
       containerPath: '/workspace/auth/dhlottery-auth.json',
-      readonly: false, // Skill may re-save refreshed cookies after purchase
+      readonly: false, // Skill saves refreshed cookies here after login
+    });
+  }
+
+  if (fs.existsSync(dhlotteryCredsFile)) {
+    mounts.push({
+      hostPath: dhlotteryCredsFile,
+      containerPath: '/workspace/auth/dhlottery-creds.json',
+      readonly: true,
     });
   }
 

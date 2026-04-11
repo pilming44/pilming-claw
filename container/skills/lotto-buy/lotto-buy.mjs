@@ -9,9 +9,28 @@ import path from 'node:path';
 
 const AUTH_FILE =
   process.env.LOTTO_AUTH_FILE || '/workspace/auth/dhlottery-auth.json';
+const CREDS_FILE =
+  process.env.LOTTO_CREDS_FILE || '/workspace/auth/dhlottery-creds.json';
 const PURCHASE_URL = 'https://ol.dhlottery.co.kr/olotto/game/game645.do';
+const MAIN_URL = 'https://dhlottery.co.kr/common/main.do';
+const LOGIN_URL = 'https://www.dhlottery.co.kr/login';
 const SESSION = 'lotto';
 const PURCHASE_TIMEOUT_MS = 8000;
+const LOGIN_TIMEOUT_MS = 8000;
+
+// 동행복권 봇 탐지 우회:
+// 1) headed Chromium (Xvfb 는 컨테이너 엔트리포인트가 제공)
+// 2) `--disable-blink-features=AutomationControlled` — 이게 빠지면 CDP 어태치
+//    직후 navigator.webdriver=true 로 찍혀 서버가 즉시 차단한다 (probe 로 확인됨).
+// 실제 env 는 container/Dockerfile 의 ENV AGENT_BROWSER_HEADED / ARGS 에서
+// 박힌다 — 여기서 process.env 로 덮으면 agent-browser daemon 이 이미 떠 있는
+// 경우 너무 늦어서 적용 안 됨. 아래 코드는 "누가 호스트에서 이 파일을 직접
+// 돌리더라도 같은 효과가 나도록" 하는 fallback.
+if (!process.env.AGENT_BROWSER_HEADED) process.env.AGENT_BROWSER_HEADED = 'true';
+if (!process.env.AGENT_BROWSER_ARGS) {
+  process.env.AGENT_BROWSER_ARGS =
+    '--no-sandbox,--disable-blink-features=AutomationControlled';
+}
 
 function out(obj) {
   console.log(JSON.stringify(obj, null, 2));
@@ -115,41 +134,172 @@ function die(code, message, extra = {}) {
   out({ status: 'error', code, message, ...extra });
 }
 
-function main() {
-  const args = parseArgs(process.argv);
-
-  if (!fs.existsSync(AUTH_FILE)) {
-    out({
-      status: 'error',
-      code: 'AUTH_MISSING',
-      message: `Auth file not found at ${AUTH_FILE}. Re-login on host and re-save with agent-browser state save.`,
-    });
+// Try to log back in using stored credentials. Returns 'ok' on success, or
+// an object { code, detail } on failure. Codes: 'CAPTCHA' | 'BAD_CREDENTIALS' |
+// 'NO_CREDS_FILE' | 'CREDS_READ_ERROR' | 'CREDS_PARSE_ERROR' |
+// 'CREDS_MISSING_KEYS' | 'UNKNOWN'.
+function tryRelogin() {
+  if (!fs.existsSync(CREDS_FILE)) return { code: 'NO_CREDS_FILE' };
+  let raw;
+  try {
+    raw = fs.readFileSync(CREDS_FILE, 'utf8');
+  } catch (e) {
+    // Includes the macOS Docker single-file bind mount inode-stale ENOENT case
+    // (file appears in directory listing but reads fail). Container restart
+    // re-binds the current host inode.
+    return { code: 'CREDS_READ_ERROR', detail: String(e && e.message) };
   }
+  let creds;
+  try {
+    creds = JSON.parse(raw);
+  } catch (e) {
+    return { code: 'CREDS_PARSE_ERROR', detail: String(e && e.message) };
+  }
+  if (!creds.userId || !creds.password) return { code: 'CREDS_MISSING_KEYS' };
 
-  // Load session and navigate.
-  ab(['state', 'load', AUTH_FILE]);
-  ab(['open', PURCHASE_URL]);
+  // Establish referer via main page, then navigate to login form.
+  ab(['open', MAIN_URL]);
+  ab(['wait', '--load', 'networkidle']);
+  ab(['open', LOGIN_URL]);
   ab(['wait', '--load', 'networkidle']);
 
-  // Session validity: purchase UI is only rendered for authenticated users.
-  // When the session has expired the page shows an alert modal and no #payAmt.
-  const sessionProbe = parseEvalJson(
+  // Bail out if dhlottery shows CAPTCHA on this attempt.
+  const preCheck = parseEvalJson(
+    abEval(`(() => ({
+      hasIdInput: !!document.getElementById('inpUserId'),
+      hasPwInput: !!document.getElementById('inpUserPswdEncn'),
+      captchaImg: document.querySelectorAll('img[src*="captcha" i]').length,
+      recaptcha: document.querySelectorAll('[class*="recaptcha" i], [id*="recaptcha" i]').length,
+      url: location.href,
+    }))()`).stdout,
+  );
+  if (!preCheck || !preCheck.hasIdInput || !preCheck.hasPwInput) {
+    return { code: 'UNKNOWN', detail: preCheck };
+  }
+  if (preCheck.captchaImg > 0 || preCheck.recaptcha > 0) {
+    return { code: 'CAPTCHA', detail: preCheck };
+  }
+
+  // Use real CDP fill+click so the form's submit handlers fire normally.
+  ab(['fill', '#inpUserId', creds.userId]);
+  ab(['fill', '#inpUserPswdEncn', creds.password]);
+  ab(['click', '#btnLogin']);
+  ab(['wait', '--load', 'networkidle']);
+
+  // Logged-in heuristic: the login form is gone or url left /login.
+  const after = parseEvalJson(
+    abEval(`(() => {
+      const stillOnLogin = /\\/login(?:$|\\?)/.test(location.pathname + location.search);
+      const idInput = document.getElementById('inpUserId');
+      const alert = document.getElementById('popupLayerAlert');
+      const alertVisible = alert && getComputedStyle(alert).display !== 'none';
+      const alertText = alertVisible ? (alert.innerText || '').trim().slice(0, 200) : null;
+      return { stillOnLogin, hasIdInput: !!idInput, alertVisible, alertText, url: location.href };
+    })()`).stdout,
+  );
+  if (after && after.alertVisible) {
+    return { code: 'BAD_CREDENTIALS', detail: after.alertText };
+  }
+  if (!after || after.stillOnLogin || after.hasIdInput) {
+    return { code: 'BAD_CREDENTIALS', detail: after };
+  }
+
+  // Persist the freshly minted cookies so future runs skip the relogin.
+  ab(['state', 'save', AUTH_FILE]);
+  return { code: 'ok' };
+}
+
+function probeSession() {
+  ab(['open', PURCHASE_URL]);
+  ab(['wait', '--load', 'networkidle']);
+  return parseEvalJson(
     abEval(`(() => {
       const pa = document.getElementById('payAmt');
       if (pa) return { ok: true, payAmt: pa.textContent.trim() };
-      // Detect the session-expired alert dialog
       const alert = document.getElementById('popupLayerAlert');
       const alertVisible = alert && getComputedStyle(alert).display !== 'none';
       const bodyText = (document.body.innerText || '').slice(0, 200);
       return { ok: false, alertVisible: !!alertVisible, bodyText };
     })()`).stdout,
   );
+}
+
+function main() {
+  const args = parseArgs(process.argv);
+
+  // Load cached cookies if present. The cache file is optional now —
+  // tryRelogin() can bootstrap from creds.json on first run or when stale.
+  if (fs.existsSync(AUTH_FILE)) {
+    ab(['state', 'load', AUTH_FILE]);
+  }
+  let sessionProbe = probeSession();
+
+  // If the saved cookie is stale, try to silently re-login using stored creds.
+  if (!sessionProbe || !sessionProbe.ok) {
+    const r = tryRelogin();
+    if (r.code === 'ok') {
+      sessionProbe = probeSession();
+    } else if (r.code === 'CAPTCHA') {
+      out({
+        status: 'error',
+        code: 'SESSION_EXPIRED_CAPTCHA',
+        message:
+          '동행복권이 로그인 시 CAPTCHA 를 요구합니다. 호스트에서 수동 로그인 후 ~/.config/nanoclaw/dhlottery-auth.json 재저장 필요.',
+        detail: r.detail,
+      });
+    } else if (r.code === 'BAD_CREDENTIALS') {
+      out({
+        status: 'error',
+        code: 'BAD_CREDENTIALS',
+        message:
+          '~/.config/nanoclaw/dhlottery-creds.json 의 ID/PW 가 거부됐습니다. 자격증명 확인 필요.',
+        detail: r.detail,
+      });
+    } else if (r.code === 'NO_CREDS_FILE') {
+      out({
+        status: 'error',
+        code: 'NO_CREDS_FILE',
+        message:
+          '~/.config/nanoclaw/dhlottery-creds.json 이 없어 자동 로그인 불가. {"userId":"...","password":"..."} 형식으로 생성 후 chmod 600 필요.',
+      });
+    } else if (r.code === 'CREDS_READ_ERROR') {
+      out({
+        status: 'error',
+        code: 'CREDS_READ_ERROR',
+        message:
+          '~/.config/nanoclaw/dhlottery-creds.json 읽기 실패. macOS Docker 의 single-file bind mount 가 stale 일 수 있음 — 컨테이너 재기동 필요.',
+        detail: r.detail,
+      });
+    } else if (r.code === 'CREDS_PARSE_ERROR') {
+      out({
+        status: 'error',
+        code: 'CREDS_PARSE_ERROR',
+        message:
+          '~/.config/nanoclaw/dhlottery-creds.json 의 JSON 파싱에 실패했습니다. (smart quote / trailing comma 등 확인)',
+        detail: r.detail,
+      });
+    } else if (r.code === 'CREDS_MISSING_KEYS') {
+      out({
+        status: 'error',
+        code: 'CREDS_MISSING_KEYS',
+        message:
+          '~/.config/nanoclaw/dhlottery-creds.json 에 userId 또는 password 키가 없습니다.',
+      });
+    } else {
+      out({
+        status: 'error',
+        code: 'RELOGIN_FAILED',
+        message: `자동 재로그인 실패 (${r.code}). 호스트에서 수동 로그인 필요.`,
+        detail: r.detail || sessionProbe,
+      });
+    }
+  }
   if (!sessionProbe || !sessionProbe.ok) {
     out({
       status: 'error',
       code: 'SESSION_EXPIRED',
       message:
-        '동행복권 세션 만료. 호스트에서 수동 재로그인 후 ~/.config/nanoclaw/dhlottery-auth.json 을 재저장해 주세요.',
+        '재로그인 후에도 구매 페이지 진입 실패. 호스트에서 수동 로그인 필요.',
       detail: sessionProbe,
     });
   }
