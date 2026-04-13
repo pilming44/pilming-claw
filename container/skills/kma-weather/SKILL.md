@@ -90,6 +90,10 @@ node /home/node/.claude/skills/kma-weather/kma-weather.mjs air 전국
 1. `air 서울 --station {사용자 지역}` 또는 `air 서울`
 2. 통합대기지수(khai_grade) 기준으로 외출 적합성 판단
 
+### API 장애 시 fallback
+
+모든 명령어(now, forecast, mid, air)는 API 호출이 3회 재시도 후에도 실패하면 `fallback: true` JSON을 반환한다. 이 경우 `search_query` 값으로 웹검색하여 해당 정보를 사용자에게 전달할 것.
+
 ### 위치 해석 우선순위
 
 1. 사용자가 행정구역명을 말함 → 그대로 `<location>` 인자 사용

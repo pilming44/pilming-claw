@@ -425,7 +425,10 @@ function parsePcp(raw) {
 // ─── HTTP helper ────────────────────────────────────────────────────────────
 // data.go.kr serviceKey 는 발급 시 `+` `/` `=` 를 포함할 수 있어 수동 인코딩.
 
-async function apiGet(baseUrl, path, params) {
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
+
+async function apiGet(baseUrl, path, params, { retries = MAX_RETRIES, throwOnFail = false } = {}) {
   const parts = [`serviceKey=${encodeURIComponent(API_KEY)}`];
   for (const [k, v] of Object.entries(params)) {
     if (v === undefined || v === null) continue;
@@ -433,38 +436,65 @@ async function apiGet(baseUrl, path, params) {
   }
   const url = `${baseUrl}${path}?${parts.join('&')}`;
 
-  if (DEBUG) console.error(`[DEBUG] GET ${url}`);
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    if (DEBUG) console.error(`[DEBUG] GET ${url} (attempt ${attempt}/${retries})`);
 
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  const text = await res.text();
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      const text = await res.text();
 
-  if (DEBUG) {
-    console.error(`[DEBUG] Status: ${res.status}`);
-    console.error(`[DEBUG] Body: ${text.slice(0, 2000)}`);
+      if (DEBUG) {
+        console.error(`[DEBUG] Status: ${res.status}`);
+        console.error(`[DEBUG] Body: ${text.slice(0, 2000)}`);
+      }
+
+      if (!res.ok) {
+        lastError = { code: 'API_ERROR', message: `HTTP ${res.status}`, body: text.slice(0, 500) };
+        if (res.status >= 500 && attempt < retries) {
+          if (DEBUG) console.error(`[DEBUG] Server error, retrying in ${RETRY_DELAY_MS}ms...`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        if (throwOnFail) throw lastError;
+        die('API_ERROR', `HTTP ${res.status}`, { body: text.slice(0, 500) });
+      }
+
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        if (throwOnFail) throw { code: 'API_ERROR', message: 'JSON 파싱 실패', body: text.slice(0, 500) };
+        die(
+          'API_ERROR',
+          '응답이 JSON 이 아닙니다. DATA_GO_KR_API_KEY 가 유효한지, 해당 서비스가 활용 신청되어 있는지 확인하세요.',
+          { body: text.slice(0, 500) },
+        );
+      }
+
+      const header = json?.response?.header;
+      if (header && header.resultCode && header.resultCode !== '00' && header.resultCode !== '0') {
+        if (throwOnFail) throw { code: 'API_ERROR', message: `${header.resultMsg || 'Unknown'} (code=${header.resultCode})` };
+        die('API_ERROR', `${header.resultMsg || 'Unknown'} (code=${header.resultCode})`);
+      }
+
+      return json;
+    } catch (err) {
+      if (err && err.code === 'API_ERROR') {
+        lastError = err;
+        if (throwOnFail && attempt >= retries) throw err;
+      } else {
+        lastError = { code: 'NETWORK_ERROR', message: err?.message || String(err) };
+        if (attempt < retries) {
+          if (DEBUG) console.error(`[DEBUG] Network error, retrying in ${RETRY_DELAY_MS}ms...`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        if (throwOnFail) throw lastError;
+        die('NETWORK_ERROR', lastError.message);
+      }
+    }
   }
-
-  if (!res.ok) {
-    die('API_ERROR', `HTTP ${res.status}`, { body: text.slice(0, 500) });
-  }
-
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    // data.go.kr 은 키가 틀리면 XML SOAP fault 로 응답한다.
-    die(
-      'API_ERROR',
-      '응답이 JSON 이 아닙니다. DATA_GO_KR_API_KEY 가 유효한지, 해당 서비스가 활용 신청되어 있는지 확인하세요.',
-      { body: text.slice(0, 500) },
-    );
-  }
-
-  const header = json?.response?.header;
-  if (header && header.resultCode && header.resultCode !== '00' && header.resultCode !== '0') {
-    die('API_ERROR', `${header.resultMsg || 'Unknown'} (code=${header.resultCode})`);
-  }
-
-  return json;
 }
 
 // ─── Arg parsing ────────────────────────────────────────────────────────────
@@ -523,15 +553,29 @@ async function cmdNow(args) {
   const loc = resolveLocation(positional, flags);
   const { base_date, base_time } = ultraNcstBaseTime();
 
-  const data = await apiGet(VILAGE_BASE, '/getUltraSrtNcst', {
-    pageNo: 1,
-    numOfRows: 100,
-    dataType: 'JSON',
-    base_date,
-    base_time,
-    nx: loc.nx,
-    ny: loc.ny,
-  });
+  let data;
+  try {
+    data = await apiGet(VILAGE_BASE, '/getUltraSrtNcst', {
+      pageNo: 1,
+      numOfRows: 100,
+      dataType: 'JSON',
+      base_date,
+      base_time,
+      nx: loc.nx,
+      ny: loc.ny,
+    }, { throwOnFail: true });
+  } catch (err) {
+    const searchQuery = `${loc.label} 날씨 현재 기온`;
+    out({
+      fallback: true,
+      reason: err?.message || 'API 호출 실패',
+      command: 'now',
+      location: loc.label,
+      search_query: searchQuery,
+      instruction: `기상청 API 장애로 데이터를 가져올 수 없습니다. 웹검색으로 "${searchQuery}" 를 조회하여 현재 날씨 정보를 전달해주세요.`,
+    });
+    return;
+  }
 
   const items = data?.response?.body?.items?.item || [];
   if (!items.length) die('NO_DATA', '초단기실황 응답에 데이터가 없습니다.');
@@ -563,15 +607,29 @@ async function cmdForecast(args) {
   const days = Math.max(1, Math.min(3, parseInt(flags.days || '3', 10) || 3));
   const { base_date, base_time } = vilageFcstBaseTime();
 
-  const data = await apiGet(VILAGE_BASE, '/getVilageFcst', {
-    pageNo: 1,
-    numOfRows: 1000,
-    dataType: 'JSON',
-    base_date,
-    base_time,
-    nx: loc.nx,
-    ny: loc.ny,
-  });
+  let data;
+  try {
+    data = await apiGet(VILAGE_BASE, '/getVilageFcst', {
+      pageNo: 1,
+      numOfRows: 1000,
+      dataType: 'JSON',
+      base_date,
+      base_time,
+      nx: loc.nx,
+      ny: loc.ny,
+    }, { throwOnFail: true });
+  } catch (err) {
+    const searchQuery = `${loc.label} 날씨 예보 ${days}일`;
+    out({
+      fallback: true,
+      reason: err?.message || 'API 호출 실패',
+      command: 'forecast',
+      location: loc.label,
+      search_query: searchQuery,
+      instruction: `기상청 API 장애로 데이터를 가져올 수 없습니다. 웹검색으로 "${searchQuery}" 를 조회하여 날씨 예보 정보를 전달해주세요.`,
+    });
+    return;
+  }
 
   const items = data?.response?.body?.items?.item || [];
   if (!items.length) die('NO_DATA', '단기예보 응답에 데이터가 없습니다.');
@@ -646,22 +704,36 @@ async function cmdMid(args) {
   }
 
   const tmFc = midForecastTmFc();
-  const [landData, tempData] = await Promise.all([
-    apiGet(MID_BASE, '/getMidLandFcst', {
-      pageNo: 1,
-      numOfRows: 10,
-      dataType: 'JSON',
-      regId: landCode,
-      tmFc,
-    }),
-    apiGet(MID_BASE, '/getMidTa', {
-      pageNo: 1,
-      numOfRows: 10,
-      dataType: 'JSON',
-      regId: tempCode,
-      tmFc,
-    }),
-  ]);
+  let landData, tempData;
+  try {
+    [landData, tempData] = await Promise.all([
+      apiGet(MID_BASE, '/getMidLandFcst', {
+        pageNo: 1,
+        numOfRows: 10,
+        dataType: 'JSON',
+        regId: landCode,
+        tmFc,
+      }, { throwOnFail: true }),
+      apiGet(MID_BASE, '/getMidTa', {
+        pageNo: 1,
+        numOfRows: 10,
+        dataType: 'JSON',
+        regId: tempCode,
+        tmFc,
+      }, { throwOnFail: true }),
+    ]);
+  } catch (err) {
+    const searchQuery = `${region} 날씨 주간예보`;
+    out({
+      fallback: true,
+      reason: err?.message || 'API 호출 실패',
+      command: 'mid',
+      location: region,
+      search_query: searchQuery,
+      instruction: `기상청 API 장애로 데이터를 가져올 수 없습니다. 웹검색으로 "${searchQuery}" 를 조회하여 중기예보 정보를 전달해주세요.`,
+    });
+    return;
+  }
 
   const land = landData?.response?.body?.items?.item?.[0];
   const temp = tempData?.response?.body?.items?.item?.[0];
@@ -706,13 +778,29 @@ async function cmdAir(args) {
     );
   }
 
-  const data = await apiGet(AIR_BASE, '/getCtprvnRltmMesureDnsty', {
-    pageNo: 1,
-    numOfRows: 200,
-    returnType: 'json',
-    sidoName: sido,
-    ver: '1.0',
-  });
+  let data;
+  try {
+    data = await apiGet(AIR_BASE, '/getCtprvnRltmMesureDnsty', {
+      pageNo: 1,
+      numOfRows: 200,
+      returnType: 'json',
+      sidoName: sido,
+      ver: '1.0',
+    }, { throwOnFail: true });
+  } catch (err) {
+    const station = flags.station || '';
+    const searchQuery = station
+      ? `${sido} ${station} 미세먼지 오늘 실시간`
+      : `${sido} 미세먼지 오늘 실시간`;
+    out({
+      fallback: true,
+      reason: err?.message || 'API 호출 실패',
+      sido,
+      search_query: searchQuery,
+      instruction: `에어코리아 API 장애로 데이터를 가져올 수 없습니다. 웹검색으로 "${searchQuery}" 를 조회하여 미세먼지 정보를 전달해주세요.`,
+    });
+    return;
+  }
 
   // returnType=json 일 때 body.items 는 배열. 방어적으로 body.items.item 도 지원.
   let rawItems = data?.response?.body?.items;
