@@ -340,6 +340,13 @@ async function buildContainerArgs(
     noProxyDomains.push('apis-navi.kakaomobility.com', 'dapi.kakao.com');
   }
 
+  // data.go.kr key for kma-weather skill (KMA forecasts + AirKorea 미세먼지).
+  const dataGoKrCreds = readEnvFile(['DATA_GO_KR_API_KEY']);
+  if (dataGoKrCreds.DATA_GO_KR_API_KEY) {
+    args.push('-e', `DATA_GO_KR_API_KEY=${dataGoKrCreds.DATA_GO_KR_API_KEY}`);
+    noProxyDomains.push('apis.data.go.kr');
+  }
+
   if (noProxyDomains.length) {
     args.push('-e', `NO_PROXY=${noProxyDomains.join(',')}`);
   }
