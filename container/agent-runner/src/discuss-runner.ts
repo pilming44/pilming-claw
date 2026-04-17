@@ -23,7 +23,7 @@ import { callGptSimple } from './openai-runner.js';
 
 // --- Configuration ---
 
-const CLAUDE_MODEL = process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-6';
+const CLAUDE_MODEL = process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-7';
 const OPENAI_MODEL = process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4';
 const MAX_ROUNDS = parseInt(process.env.DISCUSS_MAX_ROUNDS || '7', 10);
 
@@ -102,6 +102,7 @@ async function callClaude(
       tools: [],
       maxTurns: 1,
       effort: 'max',
+      thinking: { type: 'adaptive' },
       persistSession: false,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
