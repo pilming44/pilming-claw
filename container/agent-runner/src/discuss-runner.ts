@@ -24,7 +24,9 @@ import { callGptSimple } from './openai-runner.js';
 // --- Configuration ---
 
 const CLAUDE_MODEL = process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-7';
+const CLAUDE_EFFORT = 'max';
 const OPENAI_MODEL = process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4';
+const OPENAI_EFFORT = process.env.DISCUSS_OPENAI_REASONING || 'none';
 const MAX_ROUNDS = parseInt(process.env.DISCUSS_MAX_ROUNDS || '7', 10);
 
 const CONSENSUS_TAG = '[CONSENSUS]';
@@ -401,6 +403,7 @@ async function runDebate(topic: string): Promise<void> {
       status: 'success',
       result: `[Round ${round}]\n\n🔵 Claude Opus:\n${claudeResponse}`,
       model: CLAUDE_MODEL,
+      effort: CLAUDE_EFFORT,
     });
 
     if (shouldClose()) break;
@@ -436,6 +439,7 @@ async function runDebate(topic: string): Promise<void> {
       status: 'success',
       result: `\n🟢 GPT 5.4:\n${gptResponse}`,
       model: OPENAI_MODEL,
+      effort: OPENAI_EFFORT,
     });
 
     // --- End-of-round consensus check (GPT just spoke) ---

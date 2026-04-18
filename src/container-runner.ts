@@ -56,6 +56,7 @@ export interface ContainerOutput {
   error?: string;
   requestId?: string;
   model?: string;
+  effort?: string;
   usage?: { input_tokens: number; output_tokens: number };
   costUSD?: number;
   durationMs?: number;
@@ -394,7 +395,7 @@ async function buildContainerArgs(
   if (vendor === 'discuss') {
     args.push(
       '-e',
-      `DISCUSS_CLAUDE_MODEL=${process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-6'}`,
+      `DISCUSS_CLAUDE_MODEL=${process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-7'}`,
     );
     args.push(
       '-e',

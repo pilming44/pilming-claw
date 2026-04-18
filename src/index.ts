@@ -332,7 +332,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           'Agent response',
         );
         if (text) {
-          const modelTag = result.model ? `(${result.model}) ` : '';
+          const tagBody = result.model
+            ? result.effort
+              ? `${result.model} · ${result.effort}`
+              : result.model
+            : '';
+          const modelTag = tagBody ? `(${tagBody}) ` : '';
           await channel.sendMessage(chatJid, `${modelTag}${text}`);
           outputSentToUser = true;
         }

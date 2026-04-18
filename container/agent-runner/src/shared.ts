@@ -29,6 +29,7 @@ export interface ContainerOutput {
   error?: string;
   requestId?: string;
   model?: string;
+  effort?: string;
   usage?: { input_tokens: number; output_tokens: number };
   costUSD?: number;
   durationMs?: number;

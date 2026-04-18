@@ -288,7 +288,7 @@ async function callResponsesAPI(
   input: ResponsesInputItem[],
   model: string,
   authHeaders: Record<string, string>,
-  options?: { tools?: boolean },
+  options?: { tools?: boolean; reasoningEffort?: string },
 ): Promise<ResponsesAPIResponse> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -307,6 +307,9 @@ async function callResponsesAPI(
     body.tools = responsesToolDefinitions();
     body.tool_choice = 'auto';
     body.parallel_tool_calls = true;
+  }
+  if (options?.reasoningEffort) {
+    body.reasoning = { effort: options.reasoningEffort };
   }
 
   const response = await fetch(`${WHAM_BASE_URL}/responses`, {
@@ -328,6 +331,7 @@ async function callResponsesAPI(
 
   const seenTypes: string[] = [];
   let lastResponse: ResponsesAPIResponse | null = null;
+  let streamedText = '';
 
   for (const evt of sseEvents) {
     if (evt.data === '[DONE]') {
@@ -345,12 +349,50 @@ async function callResponsesAPI(
     const type = (parsed.type as string) || evt.event || 'unknown';
     seenTypes.push(type);
 
+    // Accumulate streamed text deltas. WHAM sometimes returns response.completed
+    // with an empty output array even though text was streamed via deltas.
+    if (type === 'response.output_text.delta' && typeof parsed.delta === 'string') {
+      streamedText += parsed.delta;
+    } else if (type === 'response.output_text.done' && typeof parsed.text === 'string') {
+      // done event carries the full text for the item; prefer it if present
+      streamedText = parsed.text;
+    }
+
     // Primary: response.completed carries the full response
     if (type === 'response.completed' || type === 'response.done') {
       const resp = (parsed.response ?? parsed) as ResponsesAPIResponse;
-      if (resp?.output) return resp;
+      // If output is missing or empty but we captured streamed text, synthesize a message item
+      if ((!resp?.output || resp.output.length === 0) && streamedText) {
+        log(`[openai:wham] Synthesizing output from streamed deltas (${streamedText.length} chars)`);
+        return {
+          ...resp,
+          output: [
+            {
+              type: 'message',
+              content: [{ type: 'output_text', text: streamedText }],
+            },
+          ],
+        } as ResponsesAPIResponse;
+      }
+      if (resp?.output && resp.output.length > 0) return resp;
       lastResponse = resp;
     }
+  }
+
+  // Last resort: if we have streamed text but never saw a usable completed event
+  if (streamedText) {
+    log(`[openai:wham] No completed event with output, using streamed text (${streamedText.length} chars)`);
+    return {
+      id: (lastResponse?.id as string) || '',
+      model: (lastResponse?.model as string) || '',
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: streamedText }],
+        },
+      ],
+      usage: lastResponse?.usage,
+    } as ResponsesAPIResponse;
   }
 
   // Fallback: return last captured response
@@ -381,8 +423,9 @@ export async function callGptSimple(
       { role: 'user', content: [{ type: 'input_text', text: userPrompt }] },
     ];
 
+    const reasoningEffort = process.env.DISCUSS_OPENAI_REASONING || undefined;
     const resp = await withAutoRefresh(async (headers) =>
-      callResponsesAPI(system, input, model, headers, { tools: false }),
+      callResponsesAPI(system, input, model, headers, { tools: false, reasoningEffort }),
     );
 
     const text =
@@ -390,6 +433,11 @@ export async function callGptSimple(
         ?.map((item) => extractText(item))
         .filter(Boolean)
         .join('') || '';
+
+    if (!text) {
+      log(`[openai:wham:diag] EMPTY TEXT. Full resp.output: ${JSON.stringify(resp.output)?.slice(0, 3000)}`);
+      log(`[openai:wham:diag] resp.model=${resp.model}, usage=${JSON.stringify(resp.usage)}`);
+    }
 
     return { text, model: resp.model || model };
   }
