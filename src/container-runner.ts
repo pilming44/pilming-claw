@@ -409,6 +409,9 @@ async function buildContainerArgs(
       '-e',
       `DISCUSS_MAX_ROUNDS=${process.env.DISCUSS_MAX_ROUNDS || '10'}`,
     );
+    if (process.env.DEBUG_WHAM_EVENTS) {
+      args.push('-e', `DEBUG_WHAM_EVENTS=${process.env.DEBUG_WHAM_EVENTS}`);
+    }
   }
 
   // Runtime-specific args for host gateway resolution

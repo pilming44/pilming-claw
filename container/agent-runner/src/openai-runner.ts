@@ -101,7 +101,7 @@ async function callChatCompletions(
     method: 'POST',
     headers,
     body: JSON.stringify({ model, messages, tools: TOOL_DEFINITIONS }),
-    signal: AbortSignal.timeout(300_000),
+    signal: AbortSignal.timeout(600_000),
   });
 
   if (!response.ok) {
@@ -304,9 +304,17 @@ async function callResponsesAPI(
     stream: true,
   };
   if (includeTools) {
-    body.tools = responsesToolDefinitions();
+    body.tools = [
+      ...responsesToolDefinitions(),
+      { type: 'web_search' },
+    ];
     body.tool_choice = 'auto';
     body.parallel_tool_calls = true;
+  } else {
+    // Single-turn text-only callers (e.g. @discuss) still get server-side web_search
+    // so the model can ground arguments in fresh data without a client tool-execution loop.
+    body.tools = [{ type: 'web_search' }];
+    body.tool_choice = 'auto';
   }
   if (options?.reasoningEffort) {
     body.reasoning = { effort: options.reasoningEffort };
@@ -316,7 +324,7 @@ async function callResponsesAPI(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(300_000),
+    signal: AbortSignal.timeout(600_000),
   });
 
   if (!response.ok) {
@@ -328,6 +336,13 @@ async function callResponsesAPI(
 
   const rawText = await response.text();
   const sseEvents = parseSSEEvents(rawText);
+
+  const debugEvents = process.env.DEBUG_WHAM_EVENTS === '1';
+  const requestReasoning = JSON.stringify(body.reasoning ?? null);
+
+  if (debugEvents) {
+    log(`[openai:wham:events] total SSE events=${sseEvents.length}, request.reasoning=${requestReasoning}`);
+  }
 
   const seenTypes: string[] = [];
   let lastResponse: ResponsesAPIResponse | null = null;
@@ -348,6 +363,11 @@ async function callResponsesAPI(
 
     const type = (parsed.type as string) || evt.event || 'unknown';
     seenTypes.push(type);
+
+    if (debugEvents && seenTypes.length <= 30) {
+      const preview = JSON.stringify(parsed).slice(0, 300);
+      log(`[openai:wham:event#${seenTypes.length}] ${type} ${preview}`);
+    }
 
     // Accumulate streamed text deltas. WHAM sometimes returns response.completed
     // with an empty output array even though text was streamed via deltas.
@@ -373,6 +393,13 @@ async function callResponsesAPI(
             },
           ],
         } as ResponsesAPIResponse;
+      }
+      // Diagnostic: response.completed arrived with empty output AND no streamed deltas —
+      // this is the failure mode. Dump context immediately so we can identify the missing event.
+      if ((!resp?.output || resp.output.length === 0) && !streamedText) {
+        log(`[openai:wham:empty] seenTypes=[${seenTypes.join(', ')}]`);
+        log(`[openai:wham:empty] request.reasoning=${requestReasoning}, model=${model}`);
+        log(`[openai:wham:empty] raw SSE (last 8000 chars):\n${rawText.slice(-8000)}`);
       }
       if (resp?.output && resp.output.length > 0) return resp;
       lastResponse = resp;
@@ -437,6 +464,7 @@ export async function callGptSimple(
     if (!text) {
       log(`[openai:wham:diag] EMPTY TEXT. Full resp.output: ${JSON.stringify(resp.output)?.slice(0, 3000)}`);
       log(`[openai:wham:diag] resp.model=${resp.model}, usage=${JSON.stringify(resp.usage)}`);
+      log(`[openai:wham:diag] authMode=${authMode}, requested.reasoning.effort=${reasoningEffort ?? 'none'}, requested.model=${model}`);
     }
 
     return { text, model: resp.model || model };

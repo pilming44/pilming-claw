@@ -66,7 +66,8 @@ Rules:
 - Provide thorough, in-depth responses. Do not artificially shorten your arguments.
 - If a [Moderator] message appears, incorporate their direction into your next response.
 - Respond in the same language as the user's topic.
-- Use plain text only. No markdown syntax (no #, ##, **, [], tables, etc.).`;
+- Use plain text only. No markdown syntax (no #, ##, **, [], tables, etc.).
+- You have WebSearch and WebFetch tools available. Use them whenever the debate depends on recent facts, statistics, news, prices, regulations, or any claim you cannot verify from memory. Cite the source URL inline when you rely on retrieved information.`;
 }
 
 function buildGptSystemPrompt(topic: string): string {
@@ -83,7 +84,8 @@ Rules:
 - Provide thorough, in-depth responses. Do not artificially shorten your arguments.
 - If a [Moderator] message appears, incorporate their direction into your next response.
 - Respond in the same language as the user's topic.
-- Use plain text only. No markdown syntax (no #, ##, **, [], tables, etc.).`;
+- Use plain text only. No markdown syntax (no #, ##, **, [], tables, etc.).
+- You have a web_search tool available. Use it whenever the debate depends on recent facts, statistics, news, prices, regulations, or any claim you cannot verify from memory. Cite the source URL inline when you rely on retrieved information.`;
 }
 
 // --- Claude API (via Claude Agent SDK — uses subscription auth) ---
@@ -101,8 +103,8 @@ async function callClaude(
     options: {
       model: CLAUDE_MODEL,
       systemPrompt: system,
-      tools: [],
-      maxTurns: 1,
+      tools: ['WebSearch', 'WebFetch'],
+      maxTurns: 5,
       effort: 'max',
       thinking: { type: 'adaptive' },
       persistSession: false,
