@@ -246,48 +246,6 @@ function buildVolumeMounts(
     });
   }
 
-  // 동행복권 lotto-buy skill state files.
-  // - dhlottery-auth.json: agent-browser storage state (cookie cache).
-  //   Auto-managed by the skill — created/refreshed on first successful login.
-  // - dhlottery-creds.json: ID/PW for auto-relogin (personal use, chmod 600).
-  const dhlotteryAuthFile = path.join(
-    HOME_DIR,
-    '.config',
-    'nanoclaw',
-    'dhlottery-auth.json',
-  );
-  const dhlotteryCredsFile = path.join(
-    HOME_DIR,
-    '.config',
-    'nanoclaw',
-    'dhlottery-creds.json',
-  );
-
-  // If creds exist, the skill can self-bootstrap. Ensure the cache file exists
-  // first so the bind mount has a host inode to attach to (Docker on macOS
-  // can't bind-mount a non-existent path).
-  if (fs.existsSync(dhlotteryCredsFile) && !fs.existsSync(dhlotteryAuthFile)) {
-    fs.writeFileSync(dhlotteryAuthFile, '{"cookies":[],"origins":[]}\n', {
-      mode: 0o600,
-    });
-  }
-
-  if (fs.existsSync(dhlotteryAuthFile)) {
-    mounts.push({
-      hostPath: dhlotteryAuthFile,
-      containerPath: '/workspace/auth/dhlottery-auth.json',
-      readonly: false, // Skill saves refreshed cookies here after login
-    });
-  }
-
-  if (fs.existsSync(dhlotteryCredsFile)) {
-    mounts.push({
-      hostPath: dhlotteryCredsFile,
-      containerPath: '/workspace/auth/dhlottery-creds.json',
-      readonly: true,
-    });
-  }
-
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -377,8 +335,16 @@ async function buildContainerArgs(
 
   // Pass OpenAI configuration when vendor is openai or discuss
   if (vendor === 'openai' || vendor === 'discuss') {
-    const openaiModel = process.env.OPENAI_MODEL || 'gpt-5.4';
+    const openaiSettings = readEnvFile([
+      'OPENAI_MODEL',
+      'OPENAI_REASONING_EFFORT',
+    ]);
+    const openaiModel = openaiSettings.OPENAI_MODEL || 'gpt-5.4';
     args.push('-e', `OPENAI_MODEL=${openaiModel}`);
+
+    const reasoningEffort =
+      openaiSettings.OPENAI_REASONING_EFFORT || 'xhigh';
+    args.push('-e', `OPENAI_REASONING_EFFORT=${reasoningEffort}`);
 
     // Determine auth mode: subscription (OAuth) if token file exists, otherwise apikey
     const homeDir = process.env.HOME || os.homedir();
@@ -396,14 +362,6 @@ async function buildContainerArgs(
     args.push(
       '-e',
       `DISCUSS_CLAUDE_MODEL=${process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-7'}`,
-    );
-    args.push(
-      '-e',
-      `DISCUSS_OPENAI_MODEL=${process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4'}`,
-    );
-    args.push(
-      '-e',
-      `DISCUSS_OPENAI_REASONING=${process.env.DISCUSS_OPENAI_REASONING || 'xhigh'}`,
     );
     args.push(
       '-e',

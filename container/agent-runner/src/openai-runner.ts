@@ -22,7 +22,6 @@ import {
   runScript,
 } from './shared.js';
 
-import { buildSystemPrompt } from './system-prompt.js';
 import {
   TOOL_DEFINITIONS,
   responsesToolDefinitions,
@@ -91,16 +90,26 @@ async function callChatCompletions(
   model: string,
   baseUrl: string,
   apiKey?: string,
+  reasoningEffort?: string,
 ): Promise<ChatCompletionResponse> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    tools: TOOL_DEFINITIONS,
+  };
+  if (reasoningEffort) {
+    body.reasoning_effort = reasoningEffort;
+  }
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model, messages, tools: TOOL_DEFINITIONS }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(600_000),
   });
 
@@ -126,6 +135,8 @@ async function runChatCompletionsLoop(
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
   messages.push({ role: 'user', content: initialPrompt });
 
+  const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || undefined;
+
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let numTurns = 0;
@@ -135,7 +146,7 @@ async function runChatCompletionsLoop(
     numTurns++;
     log(`[openai:apikey] Turn ${numTurns}, messages: ${messages.length}`);
 
-    const response = await callChatCompletions(messages, model, baseUrl, apiKey);
+    const response = await callChatCompletions(messages, model, baseUrl, apiKey, reasoningEffort);
 
     if (response.usage) {
       totalInputTokens += response.usage.prompt_tokens;
@@ -298,11 +309,13 @@ async function callResponsesAPI(
   const includeTools = options?.tools !== false;
   const body: Record<string, unknown> = {
     model,
-    instructions,
     input,
     store: false,
     stream: true,
   };
+  if (instructions) {
+    body.instructions = instructions;
+  }
   if (includeTools) {
     body.tools = [
       ...responsesToolDefinitions(),
@@ -450,7 +463,7 @@ export async function callGptSimple(
       { role: 'user', content: [{ type: 'input_text', text: userPrompt }] },
     ];
 
-    const reasoningEffort = process.env.DISCUSS_OPENAI_REASONING || undefined;
+    const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || undefined;
     const resp = await withAutoRefresh(async (headers) =>
       callResponsesAPI(system, input, model, headers, { tools: false, reasoningEffort }),
     );
@@ -478,7 +491,8 @@ export async function callGptSimple(
     { role: 'user', content: userPrompt },
   ];
 
-  const resp = await callChatCompletions(messages, model, baseUrl, apiKey);
+  const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || undefined;
+  const resp = await callChatCompletions(messages, model, baseUrl, apiKey, reasoningEffort);
   const text = resp.choices[0]?.message?.content || '';
   return { text, model: resp.model || model };
 }
@@ -517,6 +531,8 @@ async function runResponsesLoop(
     },
   ];
 
+  const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || undefined;
+
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let numTurns = 0;
@@ -529,7 +545,7 @@ async function runResponsesLoop(
     );
 
     const response = await withAutoRefresh(async (headers) =>
-      callResponsesAPI(systemPrompt, conversationInput, model, headers),
+      callResponsesAPI(systemPrompt, conversationInput, model, headers, { reasoningEffort }),
     );
 
     if (response.usage) {
@@ -645,8 +661,12 @@ export async function runOpenAI(containerInput: ContainerInput): Promise<void> {
     /* ignore */
   }
 
-  // Build system prompt from CLAUDE.md files
-  const systemPrompt = buildSystemPrompt(containerInput);
+  // @gpt path — lightweight assistant persona, no group CLAUDE.md injection.
+  // (WHAM Responses API also rejects empty `instructions` with 400.)
+  const systemPrompt = `당신은 pilming-claw의 개인 AI 비서입니다.
+기본적으로는 비서답게 핵심을 놓치지 않으면서 간결하게 답합니다. 불필요한 서론이나 사족은 덧붙이지 않습니다.
+다만 사용자의 질문이 깊은 고민이나 자세한 분석을 요구하는 경우에는 필요한 만큼 충분히 깊고 자세하게 답합니다.
+특별한 요청이 없는 한 한국어로 응답합니다.`;
 
   // Build initial prompt
   let prompt = containerInput.prompt;

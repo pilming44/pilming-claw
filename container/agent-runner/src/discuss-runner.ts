@@ -25,8 +25,8 @@ import { callGptSimple } from './openai-runner.js';
 
 const CLAUDE_MODEL = process.env.DISCUSS_CLAUDE_MODEL || 'claude-opus-4-7';
 const CLAUDE_EFFORT = 'max';
-const OPENAI_MODEL = process.env.DISCUSS_OPENAI_MODEL || 'gpt-5.4';
-const OPENAI_EFFORT = process.env.DISCUSS_OPENAI_REASONING || 'none';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4';
+const OPENAI_EFFORT = process.env.OPENAI_REASONING_EFFORT || 'xhigh';
 const MAX_ROUNDS = parseInt(process.env.DISCUSS_MAX_ROUNDS || '7', 10);
 
 const CONSENSUS_TAG = '[CONSENSUS]';
