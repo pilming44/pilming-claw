@@ -342,8 +342,7 @@ async function buildContainerArgs(
     const openaiModel = openaiSettings.OPENAI_MODEL || 'gpt-5.4';
     args.push('-e', `OPENAI_MODEL=${openaiModel}`);
 
-    const reasoningEffort =
-      openaiSettings.OPENAI_REASONING_EFFORT || 'xhigh';
+    const reasoningEffort = openaiSettings.OPENAI_REASONING_EFFORT || 'xhigh';
     args.push('-e', `OPENAI_REASONING_EFFORT=${reasoningEffort}`);
 
     // Determine auth mode: subscription (OAuth) if token file exists, otherwise apikey
