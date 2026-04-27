@@ -315,8 +315,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        // Strip <internal> tags and apply channel-native formatting (slack mrkdwn, etc.)
+        const text = formatOutbound(raw, channel.name as ChannelType);
         logger.info(
           {
             requestId: result.requestId,

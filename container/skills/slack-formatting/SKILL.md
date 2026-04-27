@@ -65,8 +65,34 @@ Use standard emoji shortcodes: `:white_check_mark:`, `:x:`, `:rocket:`, `:tada:`
 - **NO** `**double asterisks**` for bold (use `*single asterisks*`)
 - **NO** `[text](url)` links (use `<url|text>` instead)
 - **NO** `1.` numbered lists (use bullets with numbers: `• 1. First`)
-- **NO** tables (use code blocks or plain text alignment)
 - **NO** `---` horizontal rules
+
+## Tables (use aligned code blocks)
+
+Slack does not render markdown tables (`| col | col |` + `|---|---|`). Render
+tabular data inside a fenced code block with column padding so the monospace
+font keeps cells aligned on web and mobile.
+
+When padding columns, count Korean / CJK characters and most emoji as **2 cells**
+wide and ASCII characters as **1 cell**.
+
+Example:
+
+````
+*오늘 날씨*
+
+```
+시간  기온   날씨      강수
+12시  21°C  구름많음  20%
+15시  22°C  구름많음  20%
+18시  19°C  흐림      30%
+21시  15°C  비        60%
+```
+````
+
+If you do emit a raw markdown table, the channel will auto-convert it to this
+format — but emitting the aligned code block directly avoids any conversion
+ambiguity.
 
 ## Example message
 
@@ -92,3 +118,4 @@ _March 21, 2026_
 4. Use `:emoji:` shortcodes
 5. Quote blocks with `>`
 6. Skip headings — use bold text instead
+7. Render tables as aligned code blocks (CJK = 2 cells, ASCII = 1 cell)

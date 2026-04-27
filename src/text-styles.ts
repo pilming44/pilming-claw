@@ -26,8 +26,17 @@ export function parseTextStyles(text: string, channel: ChannelType): string {
   // Discord is already Markdown; Signal uses parseSignalStyles() for rich text.
   if (channel === 'discord' || channel === 'signal') return text;
 
+  // Slack: convert markdown tables to padded code blocks before segmenting.
+  // Slack ignores `|---|` syntax entirely, so a raw markdown table is unreadable.
+  // Wrapping in a fenced block uses Slack's monospace font; column padding (visual
+  // width) keeps cells aligned on web and mobile.
+  let working = text;
+  if (channel === 'slack') {
+    working = convertMarkdownTablesForSlack(working);
+  }
+
   // Split into protected (code) and unprotected regions, transform only the latter.
-  const segments = splitProtectedRegions(text);
+  const segments = splitProtectedRegions(working);
   return segments
     .map(({ content, protected: isProtected }) =>
       isProtected ? content : transformSegment(content, channel),
@@ -334,4 +343,132 @@ function transformSegment(text: string, channel: ChannelType): string {
   t = t.replace(/^(-{3,}|\*{3,}|_{3,})$/gm, '');
 
   return t;
+}
+
+// ---------------------------------------------------------------------------
+// Slack markdown-table → aligned code-block conversion
+// ---------------------------------------------------------------------------
+
+const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+
+/**
+ * Visual width of a string in monospace cells.
+ * CJK ideographs, Hangul, full-width punctuation, and most emoji occupy 2 cells;
+ * everything else (ASCII, Latin, combining marks treated as base) is 1 cell.
+ */
+function visualWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp >= 0x1100 && cp <= 0x115f) w += 2;
+    else if (cp >= 0x2e80 && cp <= 0x9fff) w += 2;
+    else if (cp >= 0xa960 && cp <= 0xa97f) w += 2;
+    else if (cp >= 0xac00 && cp <= 0xd7a3) w += 2;
+    else if (cp >= 0xf900 && cp <= 0xfaff) w += 2;
+    else if (cp >= 0xfe30 && cp <= 0xfe4f) w += 2;
+    else if (cp >= 0xff00 && cp <= 0xff60) w += 2;
+    else if (cp >= 0xffe0 && cp <= 0xffe6) w += 2;
+    else if (cp >= 0x1f000 && cp <= 0x1ffff) w += 2;
+    else if (cp >= 0x20000 && cp <= 0x3fffd) w += 2;
+    else w += 1;
+  }
+  return w;
+}
+
+/** Split a markdown table row into trimmed cell strings. */
+function splitRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+
+/** Pad `s` on the right so its visual width reaches `target`. */
+function padVisual(s: string, target: number): string {
+  const pad = target - visualWidth(s);
+  return pad > 0 ? s + ' '.repeat(pad) : s;
+}
+
+/**
+ * Detect markdown tables in `text` and convert each one to a fenced code block
+ * with column-aligned padding. Tables already inside a fenced code block are
+ * left untouched. Lines containing `|` that are not part of a table (no
+ * `|---|` separator on the next line) pass through unchanged.
+ */
+export function convertMarkdownTablesForSlack(text: string): string {
+  if (!text.includes('|')) return text;
+
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Track fenced code blocks — never convert tables inside them.
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      out.push(line);
+      i++;
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+      i++;
+      continue;
+    }
+
+    // A markdown table requires: header row with `|`, then separator row `|---|`.
+    const isHeaderCandidate = line.includes('|') && line.trim() !== '';
+    const next = i + 1 < lines.length ? lines[i + 1] : '';
+    if (isHeaderCandidate && TABLE_SEPARATOR_RE.test(next)) {
+      const headerCells = splitRow(line);
+      const colCount = headerCells.length;
+      const rows: string[][] = [headerCells];
+
+      let j = i + 2;
+      while (j < lines.length) {
+        const row = lines[j];
+        if (!row.includes('|') || row.trim() === '') break;
+        if (/^\s*```/.test(row)) break;
+        const cells = splitRow(row);
+        // Normalize cell count to header width (truncate or pad with empty).
+        if (cells.length < colCount) {
+          while (cells.length < colCount) cells.push('');
+        } else if (cells.length > colCount) {
+          cells.length = colCount;
+        }
+        rows.push(cells);
+        j++;
+      }
+
+      const widths = new Array(colCount).fill(0);
+      for (const row of rows) {
+        for (let c = 0; c < colCount; c++) {
+          const w = visualWidth(row[c]);
+          if (w > widths[c]) widths[c] = w;
+        }
+      }
+
+      const aligned = rows.map((row) =>
+        row
+          .map((cell, c) =>
+            c === colCount - 1 ? cell : padVisual(cell, widths[c]),
+          )
+          .join('  '),
+      );
+
+      out.push('```');
+      for (const r of aligned) out.push(r);
+      out.push('```');
+      i = j;
+      continue;
+    }
+
+    out.push(line);
+    i++;
+  }
+
+  return out.join('\n');
 }
